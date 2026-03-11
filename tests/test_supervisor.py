@@ -109,7 +109,7 @@ class TestCreateWorkerIntegration:
             "codex_fleet_supervisor.supervisor.build_codex_command"
         ) as mock_build:
             # We'll dynamically set the command based on result_json_path
-            def fake_build(prompt_path, result_json_path, model=None, extra_args=None):
+            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
 
@@ -306,7 +306,7 @@ class TestCleanupWorker:
         with patch(
             "codex_fleet_supervisor.supervisor.build_codex_command"
         ) as mock_build:
-            def fake_build(prompt_path, result_json_path, model=None, extra_args=None):
+            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build
@@ -432,7 +432,7 @@ class TestCollectWorkerResult:
         with patch(
             "codex_fleet_supervisor.supervisor.build_codex_command"
         ) as mock_build:
-            def fake_build(prompt_path, result_json_path, model=None, extra_args=None):
+            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build

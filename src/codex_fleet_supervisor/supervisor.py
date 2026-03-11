@@ -23,6 +23,7 @@ from .worker_runtime import (
 )
 
 DEFAULT_MODEL = "gpt-5.3-codex"
+DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
 MAX_CONCURRENT_WORKERS = 10
@@ -46,6 +47,7 @@ class FleetSupervisor:
         db_path: Optional[Path | str] = None,
         allowed_repos: Optional[list[str]] = None,
         default_model: str = DEFAULT_MODEL,
+        default_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         default_timeout: int = DEFAULT_TIMEOUT,
         max_concurrent: int = MAX_CONCURRENT_WORKERS,
     ):
@@ -60,6 +62,7 @@ class FleetSupervisor:
             self.allowed_repos = [Path(r).resolve() for r in allowed_repos]
 
         self.default_model = default_model
+        self.default_reasoning_effort = default_reasoning_effort
         self.default_timeout = default_timeout
         self.max_concurrent = max_concurrent
 
@@ -97,6 +100,7 @@ class FleetSupervisor:
         prompt: str,
         base_ref: str = "HEAD",
         model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         profile: Optional[str] = None,
         tags: Optional[list[str]] = None,
@@ -125,6 +129,7 @@ class FleetSupervisor:
 
         # Generate IDs and paths
         model = model or self.default_model
+        reasoning_effort = reasoning_effort or self.default_reasoning_effort
         timeout_seconds = timeout_seconds or self.default_timeout
         worker_id = _generate_worker_id()
         sanitized = _sanitize_task_name(task_name)
@@ -165,6 +170,7 @@ class FleetSupervisor:
             prompt_path=prompt_path,
             result_json_path=result_json_path,
             model=model,
+            reasoning_effort=reasoning_effort,
             extra_args=extra_codex_args,
         )
 

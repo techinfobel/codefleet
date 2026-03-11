@@ -17,6 +17,7 @@ def build_codex_command(
     prompt_path: Path,
     result_json_path: Path,
     model: str = "gpt-5.3-codex",
+    reasoning_effort: str = "xhigh",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the codex exec command."""
@@ -35,6 +36,8 @@ def build_codex_command(
     cmd = ["codex", "exec"]
     if model:
         cmd.extend(["--model", model])
+    if reasoning_effort:
+        cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
     if extra_args:
         cmd.extend(extra_args)
     cmd.append(instruction)
