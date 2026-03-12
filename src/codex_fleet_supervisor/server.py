@@ -18,7 +18,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
 
         supervisor = FleetSupervisor(
             base_dir=os.environ.get("FLEET_BASE_DIR"),
-            default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.3-codex"),
+            default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.4"),
             default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "xhigh"),
             default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
             max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "10")),

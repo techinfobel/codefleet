@@ -17,7 +17,7 @@ def _make_record(worker_id="w_test001", **overrides):
         branch_name=f"codex/test/{worker_id}",
         worktree_path=f"/tmp/fleet/workers/{worker_id}/worktree",
         worker_dir=f"/tmp/fleet/workers/{worker_id}",
-        model="gpt-5.3-codex",
+        model="gpt-5.4",
         status=WorkerStatus.PENDING,
         created_at=time.time(),
         timeout_seconds=600,
@@ -42,7 +42,7 @@ class TestWorkerStore:
         assert retrieved.worker_id == "w_test001"
         assert retrieved.task_name == "test task"
         assert retrieved.status == WorkerStatus.PENDING
-        assert retrieved.model == "gpt-5.3-codex"
+        assert retrieved.model == "gpt-5.4"
         assert retrieved.prompt == "Do something useful"
 
     def test_get_nonexistent(self, store):

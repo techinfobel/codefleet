@@ -61,7 +61,7 @@ def supervisor(tmp_path, git_repo):
     sup = FleetSupervisor(
         base_dir=base_dir,
         allowed_repos=[str(git_repo)],
-        default_model="gpt-5.3-codex",
+        default_model="gpt-5.4",
         default_timeout=60,
         max_concurrent=5,
     )

@@ -22,7 +22,7 @@ from .worker_runtime import (
     get_codex_path,
 )
 
-DEFAULT_MODEL = "gpt-5.3-codex"
+DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"

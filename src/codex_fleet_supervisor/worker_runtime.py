@@ -16,7 +16,7 @@ def get_codex_path() -> str | None:
 def build_codex_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "gpt-5.3-codex",
+    model: str = "gpt-5.4",
     reasoning_effort: str = "xhigh",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:

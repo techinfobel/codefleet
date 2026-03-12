@@ -59,7 +59,7 @@ class TestHealthcheck:
         assert result["app"] == "codex-fleet-supervisor"
         assert result["git_found"] is True
         assert result["codex_found"] is True
-        assert result["default_model"] == "gpt-5.3-codex"
+        assert result["default_model"] == "gpt-5.4"
         assert "db_path" in result
         assert "base_dir" in result
 
@@ -465,7 +465,7 @@ class TestConcurrencyLimit:
         sup = FleetSupervisor(
             base_dir=tmp_path / "fleet_limit",
             allowed_repos=[str(git_repo)],
-            default_model="gpt-5.3-codex",
+            default_model="gpt-5.4",
             default_timeout=60,
             max_concurrent=2,
         )
@@ -582,7 +582,7 @@ class TestStatePersistence:
             branch_name="codex/persist/w_persist_test",
             worktree_path=str(base_dir / "workers/w_persist_test/worktree"),
             worker_dir=str(base_dir / "workers/w_persist_test"),
-            model="gpt-5.3-codex",
+            model="gpt-5.4",
             status=WorkerStatus.SUCCEEDED,
             created_at=t.time(),
             timeout_seconds=60,

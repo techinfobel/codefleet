@@ -22,7 +22,7 @@ class TestBuildCodexCommand:
         assert cmd[0] == "codex"
         assert cmd[1] == "exec"
         assert "--model" in cmd
-        assert "gpt-5.3-codex" in cmd
+        assert "gpt-5.4" in cmd
         assert str(prompt_path) in cmd[-1]
         assert str(result_path) in cmd[-1]
 

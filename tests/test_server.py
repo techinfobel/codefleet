@@ -31,7 +31,7 @@ class TestCreateServer:
     def test_server_default_creation(self, tmp_path, monkeypatch):
         """Server should create with env vars when no supervisor is passed."""
         monkeypatch.setenv("FLEET_BASE_DIR", str(tmp_path / "fleet"))
-        monkeypatch.setenv("FLEET_DEFAULT_MODEL", "gpt-5.3-codex")
+        monkeypatch.setenv("FLEET_DEFAULT_MODEL", "gpt-5.4")
         monkeypatch.setenv("FLEET_DEFAULT_TIMEOUT", "300")
         monkeypatch.setenv("FLEET_MAX_CONCURRENT", "5")
         monkeypatch.setenv("FLEET_ALLOWED_REPOS", "")

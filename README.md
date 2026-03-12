@@ -91,7 +91,7 @@ Then start a new Claude Code session and use `/mcp` to confirm the server connec
 | Variable | Default | Description |
 |---|---|---|
 | `FLEET_BASE_DIR` | `~/.codex-fleet` | Where worker data and the SQLite DB are stored |
-| `FLEET_DEFAULT_MODEL` | `gpt-5.3-codex` | Default Codex model for workers |
+| `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model for workers |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Worker timeout in seconds (10 minutes) |
 | `FLEET_MAX_CONCURRENT` | `10` | Maximum simultaneous workers |
 | `FLEET_ALLOWED_REPOS` | _(empty = allow all)_ | Comma-separated list of allowed repo paths |
