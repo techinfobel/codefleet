@@ -33,7 +33,7 @@ def build_codex_command(
         f'"status": "completed|blocked"}}'
     )
 
-    cmd = ["codex", "exec"]
+    cmd = ["codex", "exec", "--full-auto"]
     if model:
         cmd.extend(["--model", model])
     if reasoning_effort:
