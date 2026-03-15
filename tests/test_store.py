@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from agent_fleet_supervisor.models import (
+from codefleet.models import (
     ExecutorType,
     StageDefinition,
     StageState,
@@ -14,7 +14,7 @@ from agent_fleet_supervisor.models import (
     WorkflowRecord,
     WorkflowStatus,
 )
-from agent_fleet_supervisor.store import WorkerStore
+from codefleet.store import WorkerStore
 
 
 def _make_record(worker_id="w_test001", **overrides):

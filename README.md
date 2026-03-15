@@ -1,252 +1,260 @@
-# Codex Fleet Supervisor
+<p align="center">
+  <h1 align="center">codefleet</h1>
+  <p align="center">Orchestrate fleets of AI coding agents across providers</p>
+</p>
 
-A local MCP server that lets **Claude Code** orchestrate a fleet of **OpenAI Codex** workers. Claude plans and reviews, Codex executes — each worker runs in its own isolated git worktree with full process supervision, durable state, and structured results.
+<p align="center">
+  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/v/codefleet" alt="PyPI"></a>
+  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/pyversions/codefleet" alt="Python"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
+</p>
+
+---
+
+An [MCP server](https://modelcontextprotocol.io/) that lets **Claude Code** dispatch work to **Codex**, **Gemini**, and **Claude** agents — running side-by-side in isolated git worktrees, with multi-stage workflows where agents collaborate across provider boundaries.
 
 ```
-Claude Code  -->  MCP Supervisor  -->  Codex Worker 1 (worktree + branch)
-                                  -->  Codex Worker 2 (worktree + branch)
-                                  -->  Codex Worker N ...
+Claude Code  ──>  codefleet  ──>  Codex worker   (implement)
+                             ──>  Claude worker   (review)
+                             ──>  Codex worker    (refine from review)
 ```
 
-## What This Does
+<!-- TODO: Replace with actual recording
+<p align="center">
+  <img src="demo/demo.gif" alt="codefleet demo" width="700">
+</p>
+-->
 
-- **Claude Code** decomposes work into tasks and delegates them
-- **The supervisor** launches Codex workers, tracks state in SQLite, manages git worktrees, enforces timeouts, and captures logs
-- **Codex workers** execute in isolated worktrees and write structured `result.json` files
-- **Claude Code** reviews results and decides to accept, reject, retry, or merge
+## Why
 
-This is not a demo script. It is designed for ongoing daily use across repos and sessions.
+You have access to multiple AI coding agents. Each has different strengths. But there's no way to make them **work together** on the same codebase, passing results between stages, without manual copy-paste.
 
-## Prerequisites
+codefleet fixes this. Define a workflow, pick which agent runs each stage, and let the results flow automatically.
 
-- **Python 3.11+**
-- **Git** (with worktree support)
-- **Claude Code** — [Install from Anthropic](https://docs.anthropic.com/en/docs/claude-code)
-- **OpenAI Codex CLI** — Install via npm:
-  ```bash
-  npm install -g @openai/codex
-  ```
-  Verify it works:
-  ```bash
-  codex --version
-  ```
-- **OpenAI API key** — Codex needs this set in your environment:
-  ```bash
-  export OPENAI_API_KEY="your-key-here"
-  ```
+## Install
 
-## Installation
+```bash
+uv pip install codefleet
+```
 
-1. **Clone and set up:**
-   ```bash
-   git clone <this-repo-url>
-   cd codex-fleet-supervisor
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -e ".[dev]"
-   ```
+Or with pip:
+```bash
+pip install codefleet
+```
 
-2. **Verify it works:**
-   ```bash
-   python -m pytest tests/ -q
-   ```
-   You should see 115 tests passing.
+### Prerequisites
+
+At least one of these AI CLIs must be installed:
+
+| Agent | Install | Verify |
+|-------|---------|--------|
+| **Codex** | `npm i -g @openai/codex` | `codex --version` |
+| **Gemini** | `npm i -g @anthropic-ai/gemini-cli` | `gemini --version` |
+| **Claude** | [claude.ai/download](https://claude.ai/download) | `claude --version` |
+
+Plus **Git** and **Python 3.11+**.
 
 ## Register with Claude Code
 
-Run this one command to register the MCP server:
-
 ```bash
-claude mcp add --transport stdio --scope user codex-fleet -- \
-  /path/to/codex-fleet-supervisor/.venv/bin/python \
-  -m codex_fleet_supervisor.server
+claude mcp add codefleet -- uvx codefleet
 ```
 
-Replace `/path/to/codex-fleet-supervisor` with the actual path where you cloned the repo.
+That's it. Restart Claude Code and the tools are available.
 
-**With environment variables** (optional — to restrict which repos can be used):
-
+**With options:**
 ```bash
-claude mcp add --transport stdio --scope user \
-  --env FLEET_ALLOWED_REPOS=/Users/you/projects/repo-a,/Users/you/projects/repo-b \
-  codex-fleet -- \
-  /path/to/codex-fleet-supervisor/.venv/bin/python \
-  -m codex_fleet_supervisor.server
+claude mcp add codefleet \
+  --env FLEET_ALLOWED_REPOS=/path/to/repo-a,/path/to/repo-b \
+  --env FLEET_MAX_SPAWN_DEPTH=2 \
+  -- uvx codefleet
 ```
 
-**Scope options:**
-- `--scope user` — available in all your Claude Code sessions (recommended)
-- `--scope project` — only in the current project (saved to `.mcp.json`)
-- `--scope local` — only in the current project, not shared with team
-
-**Verify registration:**
+**Verify:**
 ```bash
 claude mcp list
 ```
 
-Then start a new Claude Code session and use `/mcp` to confirm the server connects.
+## Quick Start
 
-## Environment Variables
+Start Claude Code and ask it to use multi-agent workflows:
 
-| Variable | Default | Description |
-|---|---|---|
-| `FLEET_BASE_DIR` | `~/.codex-fleet` | Where worker data and the SQLite DB are stored |
-| `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model for workers |
-| `FLEET_DEFAULT_TIMEOUT` | `600` | Worker timeout in seconds (10 minutes) |
-| `FLEET_MAX_CONCURRENT` | `10` | Maximum simultaneous workers |
-| `FLEET_ALLOWED_REPOS` | _(empty = allow all)_ | Comma-separated list of allowed repo paths |
+> "Use codefleet to add input validation to the registration endpoint. Have Codex implement it, Claude review it, then Codex refine based on the review."
 
-## MCP Tools
+Claude will call `create_workflow` with a 3-stage pipeline. Each stage runs the right agent automatically.
 
-Once registered, Claude Code gets access to these tools:
+### Single Worker
 
-| Tool | Description |
-|---|---|
-| `healthcheck` | Verify the supervisor, Codex, and Git are all available |
-| `create_worker` | Launch a Codex worker in an isolated git worktree |
-| `get_worker_status` | Check the current status of a worker |
-| `list_workers` | List recent workers, optionally filtered by status |
-| `collect_worker_result` | Get parsed results and optional log tails from a worker |
-| `cancel_worker` | Cancel a running worker |
-| `cleanup_worker` | Remove worktree, branch, and artifacts for a finished worker |
+For simple one-off tasks, use `create_worker` directly:
 
-## Example Workflow
+> "Spin up a Codex worker to add rate limiting to the API gateway"
 
-Start a Claude Code session and interact naturally:
+> "Launch a Claude worker to write tests for the auth module"
 
-```
-You: I need to add input validation to the user registration endpoint
-     and write tests for it. Use codex workers.
+> "Use a Gemini worker to refactor the database models"
 
-Claude: I'll break this into two tasks and delegate to Codex workers.
+## Workflows
 
-        [calls healthcheck — confirms environment is ready]
+The workflow engine runs a DAG of stages. Each stage picks an executor, gets a prompt template with variables from previous stages, and runs in an isolated (or inherited) git worktree.
 
-        [calls create_worker — task: "add-input-validation"
-         with a detailed prompt about what to validate]
+### Write -> Review -> Refine
 
-        [calls create_worker — task: "write-registration-tests"
-         with a prompt about test cases to cover]
-
-        [polls get_worker_status until both complete]
-
-        [calls collect_worker_result for each — reviews the code,
-         checks that tests pass, verifies result.json]
-
-        Worker 1 succeeded — validation logic looks good.
-        Worker 2 succeeded — 8 test cases covering edge cases.
-
-        I'll merge both branches into your working branch now.
-
-        [calls cleanup_worker for each]
-```
-
-## How Workers Run
-
-Each worker created by `create_worker` goes through this lifecycle:
-
-1. **Validation** — repo path, git status, allowlist, and concurrency checks
-2. **Setup** — unique worker ID, git worktree, branch (`codex/<task>/<id>`), prompt file
-3. **Launch** — `codex exec` runs in the worktree with stdout/stderr captured
-4. **Monitor** — background thread watches for completion or timeout
-5. **Evaluate** — process exit code checked, then `result.json` parsed and validated
-6. **Terminal state** — worker marked `succeeded`, `failed`, `timed_out`, or `cancelled`
-
-A worker is only `succeeded` if it exits 0 **and** writes a valid `result.json`.
-
-### Worker Result Contract
-
-Every Codex worker is instructed to write a `result.json`:
+The core pattern: one agent implements, another reviews, the first refines.
 
 ```json
 {
-  "summary": "Added email and password validation to /api/register",
-  "files_changed": ["src/routes/register.py", "src/validators.py"],
-  "tests": [
+  "name": "write-review-refine",
+  "task_prompt": "Add input validation to the registration endpoint",
+  "stages": [
     {
-      "command": "pytest tests/test_register.py",
-      "status": "passed",
-      "details": "5 passed"
+      "name": "implement",
+      "executor": "codex",
+      "prompt_template": "{task_prompt}",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "review",
+      "executor": "claude",
+      "prompt_template": "Review these changes:\n{stage_0_summary}\nFiles: {stage_0_files}",
+      "worktree_strategy": "inherit",
+      "depends_on": [0]
+    },
+    {
+      "name": "refine",
+      "executor": "codex",
+      "prompt_template": "Address this review:\n{stage_1_summary}\n{stage_1_next_steps}",
+      "worktree_strategy": "inherit",
+      "depends_on": [1]
     }
-  ],
-  "commits": ["a1b2c3d"],
-  "next_steps": ["Add rate limiting"],
-  "status": "completed"
+  ]
 }
 ```
 
-## Filesystem Layout
+### Parallel Fan-Out + Review
 
-All worker data lives under `~/.codex-fleet/` by default:
+Multiple agents work in parallel, then a reviewer checks all of them:
 
+```json
+{
+  "stages": [
+    {"name": "module-a", "executor": "codex", "worktree_strategy": "new", "depends_on": []},
+    {"name": "module-b", "executor": "gemini", "worktree_strategy": "new", "depends_on": []},
+    {
+      "name": "review",
+      "executor": "claude",
+      "prompt_template": "Review both:\nA: {stage_0_summary}\nB: {stage_1_summary}",
+      "worktree_strategy": "new",
+      "depends_on": [0, 1]
+    }
+  ]
+}
 ```
-~/.codex-fleet/
-  fleet.db                          # SQLite database (survives restarts)
-  workers/
-    w_a1b2c3d4e5f6/
-      prompt.txt                    # Task prompt sent to Codex
-      result.json                   # Structured output from Codex
-      stdout.log                    # Captured stdout
-      stderr.log                    # Captured stderr
-      meta.json                     # Worker metadata
-      worktree/                     # Isolated git worktree
+
+### Competitive Implementation
+
+Two agents implement the same thing, then a judge picks the better one:
+
+```json
+{
+  "stages": [
+    {"name": "codex-impl", "executor": "codex", "prompt_template": "{task_prompt}", "worktree_strategy": "new", "depends_on": []},
+    {"name": "claude-impl", "executor": "claude", "prompt_template": "{task_prompt}", "worktree_strategy": "new", "depends_on": []},
+    {
+      "name": "evaluate",
+      "executor": "claude",
+      "prompt_template": "Compare:\nA: {stage_0_summary}\nB: {stage_1_summary}\nWhich is better?",
+      "worktree_strategy": "new",
+      "depends_on": [0, 1]
+    }
+  ]
+}
 ```
 
-## Troubleshooting
+See [`examples/`](examples/) for complete, copy-paste-ready workflow files.
 
-**"codex not found" in healthcheck**
-- Make sure `codex` is installed globally: `npm install -g @openai/codex`
-- Verify it's on your PATH: `which codex`
+## Template Variables
 
-**"Repo not in allowlist"**
-- If you set `FLEET_ALLOWED_REPOS`, make sure the repo path is included
-- Use absolute paths, comma-separated
-- Or leave it empty to allow all repos
+Available in stage `prompt_template` strings:
 
-**Worker stuck in "running"**
-- Workers have a default 10-minute timeout
-- Use `cancel_worker` to stop a stuck worker
-- Check logs with `collect_worker_result(worker_id, include_logs=True)`
+| Variable | Value |
+|----------|-------|
+| `{task_prompt}` | The workflow's top-level task description |
+| `{stage_N_summary}` | Summary from stage N's result |
+| `{stage_N_files}` | Comma-separated list of files changed in stage N |
+| `{stage_N_next_steps}` | Suggested next steps from stage N |
+| `{stage_N_status}` | `"completed"` or `"blocked"` |
+| `{stage_N_result}` | Full result JSON from stage N |
 
-**"Concurrency limit reached"**
-- Default is 10 concurrent workers
-- Increase with `FLEET_MAX_CONCURRENT` env var
-- Or clean up finished workers with `cleanup_worker`
+## MCP Tools
 
-**MCP server not showing in Claude Code**
-- MCP servers load on session start — restart Claude Code after registering
-- Verify with `claude mcp list`
-- Check `/mcp` inside a session for connection status
+### Workers
 
-**Workers fail with "Result validation failed"**
-- Codex didn't write a valid `result.json`
-- Use `collect_worker_result(worker_id, include_logs=True)` to see what happened
-- The stderr log often contains the reason
+| Tool | Description |
+|------|-------------|
+| `healthcheck` | Verify codefleet, agent CLIs, and Git are available |
+| `create_worker` | Launch a single agent in an isolated git worktree |
+| `get_worker_status` | Check worker status |
+| `list_workers` | List workers, optionally filtered by status |
+| `collect_worker_result` | Get parsed results and optional log tails |
+| `cancel_worker` | Cancel a running worker |
+| `cleanup_worker` | Remove worktree, branch, and artifacts |
+
+### Workflows
+
+| Tool | Description |
+|------|-------------|
+| `create_workflow` | Start a multi-stage DAG workflow |
+| `get_workflow_status` | Check workflow and per-stage status |
+| `list_workflows` | List workflows with optional status filter |
+| `cancel_workflow` | Cancel all running stages |
+| `collect_workflow_result` | Get final or all-stage results |
+| `cleanup_workflow` | Clean up all worktrees and branches |
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLEET_DEFAULT_EXECUTOR` | `codex` | Default agent: `codex`, `gemini`, or `claude` |
+| `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
+| `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
+| `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-sonnet-4-6` | Default Claude model |
+| `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker timeout (seconds) |
+| `FLEET_MAX_CONCURRENT` | `10` | Max simultaneous workers |
+| `FLEET_MAX_SPAWN_DEPTH` | `2` | How deep agents can recursively spawn sub-agents |
+| `FLEET_ALLOWED_REPOS` | *(all)* | Comma-separated allowlist of repo paths |
+| `FLEET_BASE_DIR` | `~/.codex-fleet` | Data directory for workers and DB |
+
+## How It Works
+
+1. **Isolation** — each worker gets its own git worktree and branch (`{executor}/{task}/{id}`)
+2. **Supervision** — background threads monitor processes for completion/timeout
+3. **Structured output** — every agent writes a `result.json` with summary, files changed, test results, and next steps
+4. **Durability** — all state lives in SQLite (WAL mode), survives crashes and restarts
+5. **Concurrency control** — configurable limits on concurrent workers and spawn depth
 
 ## Development
 
 ```bash
-# Run tests
-python -m pytest tests/ -v
-
-# Run with coverage
-python -m pytest tests/ --cov=codex_fleet_supervisor --cov-report=term-missing
-
-# Run the server directly (stdio mode)
-python -m codex_fleet_supervisor.server
+git clone https://github.com/techinfobel/codefleet
+cd codefleet
+uv pip install -e ".[dev]"
+python -m pytest tests/ -v          # 187 tests
+python -m pytest tests/ --cov       # 93% coverage
 ```
 
-## Architecture
+## Recording the Demo
 
-```
-src/codex_fleet_supervisor/
-  models.py          # Pydantic models — WorkerStatus, WorkerResult, WorkerRecord
-  result_schema.py   # result.json parsing and validation
-  store.py           # SQLite store — thread-safe, WAL mode, durable
-  git_ops.py         # Git worktree create/remove, branch management
-  worker_runtime.py  # Subprocess launching with timeout monitoring
-  supervisor.py      # Core FleetSupervisor tying everything together
-  server.py          # FastMCP stdio server exposing all tools
+```bash
+# Install asciinema + agg (for GIF conversion)
+brew install asciinema
+cargo install --git https://github.com/asciinema/agg
+
+# Record
+asciinema rec demo/demo.cast -c "python demo/demo.py"
+
+# Convert to GIF
+agg demo/demo.cast demo/demo.gif --cols 80 --rows 24
 ```
 
 ## License

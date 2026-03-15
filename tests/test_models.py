@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from agent_fleet_supervisor.models import (
+from codefleet.models import (
     ExecutorType,
     ResultStatus,
     StageDefinition,

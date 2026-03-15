@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_fleet_supervisor.models import (
+from codefleet.models import (
     ExecutorType,
     StageDefinition,
     StageState,
@@ -19,8 +19,8 @@ from agent_fleet_supervisor.models import (
     WorkflowStatusPayload,
     WorktreeStrategy,
 )
-from agent_fleet_supervisor.supervisor import FleetSupervisor
-from agent_fleet_supervisor.workflow import WorkflowEngine, _SafeDict
+from codefleet.supervisor import FleetSupervisor
+from codefleet.workflow import WorkflowEngine, _SafeDict
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +61,15 @@ def _wait_workflow_terminal(supervisor, workflow_id, timeout=30):
 
 # Decorator-style patch that covers the entire test method
 _patch_build = patch(
-    "agent_fleet_supervisor.supervisor.build_worker_command",
+    "codefleet.supervisor.build_worker_command",
     side_effect=_fake_build,
 )
 _patch_build_fail = patch(
-    "agent_fleet_supervisor.supervisor.build_worker_command",
+    "codefleet.supervisor.build_worker_command",
     side_effect=_fake_build_fail,
 )
 _patch_build_sleep = patch(
-    "agent_fleet_supervisor.supervisor.build_worker_command",
+    "codefleet.supervisor.build_worker_command",
     side_effect=_fake_build_sleep,
 )
 

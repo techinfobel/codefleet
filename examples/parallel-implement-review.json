@@ -1,0 +1,28 @@
+{
+  "name": "parallel-implement-review",
+  "repo_path": "/path/to/your/repo",
+  "task_prompt": "Refactor the authentication module",
+  "stages": [
+    {
+      "name": "refactor-middleware",
+      "executor": "codex",
+      "prompt_template": "Refactor the auth middleware in src/middleware/auth.py. {task_prompt}",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "refactor-models",
+      "executor": "gemini",
+      "prompt_template": "Refactor the auth models in src/models/auth.py. {task_prompt}",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "review-all",
+      "executor": "claude",
+      "prompt_template": "Review both refactoring efforts for consistency:\n\nMiddleware changes: {stage_0_summary}\nFiles: {stage_0_files}\n\nModel changes: {stage_1_summary}\nFiles: {stage_1_files}\n\nCheck for integration issues between the two.",
+      "worktree_strategy": "new",
+      "depends_on": [0, 1]
+    }
+  ]
+}

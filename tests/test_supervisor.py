@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_fleet_supervisor.models import ExecutorType, WorkerStatus, WorkerStatusPayload
-from agent_fleet_supervisor.supervisor import (
+from codefleet.models import ExecutorType, WorkerStatus, WorkerStatusPayload
+from codefleet.supervisor import (
     FleetSupervisor,
     _sanitize_task_name,
     _generate_worker_id,
@@ -56,7 +56,7 @@ class TestHealthcheck:
     def test_healthcheck(self, supervisor):
         result = supervisor.healthcheck()
         assert result["ok"] is True
-        assert result["app"] == "agent-fleet-supervisor"
+        assert result["app"] == "codefleet"
         assert result["git_found"] is True
         assert result["codex_found"] is True
         assert result["default_model"] == "gpt-5.4"
@@ -106,7 +106,7 @@ class TestCreateWorkerIntegration:
         """Helper to create a worker using a Python script instead of codex."""
         # Patch build_codex_command to use our Python script
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             # We'll dynamically set the command based on result_json_path
             def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
@@ -234,7 +234,7 @@ class TestCancelWorker:
         """Cancel a worker that is sleeping."""
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -251,7 +251,7 @@ class TestCancelWorker:
         """Cannot cancel a worker that has already finished."""
         script = "pass"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -277,7 +277,7 @@ class TestCleanupWorker:
         """Cannot cleanup a running worker."""
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -304,7 +304,7 @@ class TestCleanupWorker:
             "open('__RESULT_PATH__', 'w'))"
         )
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
@@ -351,7 +351,7 @@ class TestListWorkers:
         script = "import time; time.sleep(300)"
         workers_created = []
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             for i in range(3):
@@ -375,7 +375,7 @@ class TestListWorkers:
         script_sleep = "import time; time.sleep(300)"
         script_done = "pass"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script_sleep]
             running_payload = supervisor.create_worker(
@@ -430,7 +430,7 @@ class TestCollectWorkerResult:
             "open('__RESULT_PATH__', 'w'))"
         )
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
@@ -472,7 +472,7 @@ class TestConcurrencyLimit:
 
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
 
@@ -572,7 +572,7 @@ class TestStatePersistence:
             default_timeout=10,
         )
         # Insert a worker record directly into the store
-        from agent_fleet_supervisor.models import WorkerRecord
+        from codefleet.models import WorkerRecord
         import time as t
 
         record = WorkerRecord(
@@ -624,7 +624,7 @@ class TestSpawnDepth:
         )
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
 
@@ -669,7 +669,7 @@ class TestSpawnDepth:
         )
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
 
@@ -703,7 +703,7 @@ class TestSpawnDepth:
         )
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
 
@@ -738,7 +738,7 @@ class TestClaudeExecutor:
         """Claude workers should get claude/ branch prefix."""
         script = "import time; time.sleep(300)"
         with patch(
-            "agent_fleet_supervisor.supervisor.build_worker_command"
+            "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(

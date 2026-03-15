@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_fleet_supervisor.store import WorkerStore
-from agent_fleet_supervisor.supervisor import FleetSupervisor
+from codefleet.store import WorkerStore
+from codefleet.supervisor import FleetSupervisor
 
 
 @pytest.fixture

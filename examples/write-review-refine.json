@@ -1,0 +1,28 @@
+{
+  "name": "write-review-refine",
+  "repo_path": "/path/to/your/repo",
+  "task_prompt": "Add input validation to the user registration endpoint",
+  "stages": [
+    {
+      "name": "implement",
+      "executor": "codex",
+      "prompt_template": "{task_prompt}",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "review",
+      "executor": "claude",
+      "prompt_template": "Review the code changes in this worktree.\n\nTask: {task_prompt}\nFiles changed: {stage_0_files}\nSummary: {stage_0_summary}\n\nProvide thorough feedback on correctness, edge cases, security, and readability.",
+      "worktree_strategy": "inherit",
+      "depends_on": [0]
+    },
+    {
+      "name": "refine",
+      "executor": "codex",
+      "prompt_template": "Refine the code based on this review:\n\n{stage_1_summary}\n\nSuggested next steps:\n{stage_1_next_steps}\n\nAddress all review feedback.",
+      "worktree_strategy": "inherit",
+      "depends_on": [1]
+    }
+  ]
+}

@@ -108,7 +108,7 @@ class FleetSupervisor:
         git_path = get_git_path()
         return {
             "ok": bool((codex_path or gemini_path or claude_path) and git_path),
-            "app": "agent-fleet-supervisor",
+            "app": "codefleet",
             "db_path": str(self.db_path),
             "base_dir": str(self.base_dir),
             "codex_found": codex_path is not None,

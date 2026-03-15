@@ -8,7 +8,7 @@ from .supervisor import FleetSupervisor
 
 def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     """Create the MCP server with all tools registered."""
-    mcp = FastMCP("agent-fleet-supervisor")
+    mcp = FastMCP("codefleet")
 
     if supervisor is None:
         allowed_repos_str = os.environ.get("FLEET_ALLOWED_REPOS", "")

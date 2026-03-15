@@ -1,0 +1,28 @@
+{
+  "name": "competitive-implement",
+  "repo_path": "/path/to/your/repo",
+  "task_prompt": "Implement a rate limiter for the API gateway",
+  "stages": [
+    {
+      "name": "codex-impl",
+      "executor": "codex",
+      "prompt_template": "{task_prompt}\n\nWrite clean, well-tested code.",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "claude-impl",
+      "executor": "claude",
+      "prompt_template": "{task_prompt}\n\nWrite clean, well-tested code.",
+      "worktree_strategy": "new",
+      "depends_on": []
+    },
+    {
+      "name": "evaluate",
+      "executor": "claude",
+      "prompt_template": "Two agents independently implemented a rate limiter. Compare them:\n\nImplementation A (Codex):\n{stage_0_summary}\nFiles: {stage_0_files}\n\nImplementation B (Claude):\n{stage_1_summary}\nFiles: {stage_1_files}\n\nWhich implementation is better and why? Consider correctness, performance, readability, and test coverage.",
+      "worktree_strategy": "new",
+      "depends_on": [0, 1]
+    }
+  ]
+}

@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent_fleet_supervisor.server import create_server
-from agent_fleet_supervisor.supervisor import FleetSupervisor
+from codefleet.server import create_server
+from codefleet.supervisor import FleetSupervisor
 
 
 def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
@@ -29,7 +29,7 @@ class TestCreateServer:
         """Server should be created with all tools registered."""
         server = create_server(supervisor=supervisor)
         assert server is not None
-        assert server.name == "agent-fleet-supervisor"
+        assert server.name == "codefleet"
 
     def test_server_has_tools(self, supervisor):
         """Server should expose all required MCP tools."""
@@ -89,7 +89,7 @@ class TestServerToolCalls:
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("agent_fleet_supervisor.supervisor.build_worker_command", side_effect=_fake_build)
+    @patch("codefleet.supervisor.build_worker_command", side_effect=_fake_build)
     async def test_create_worker_tool(self, mock_build, supervisor, git_repo):
         server = create_server(supervisor=supervisor)
         result = await server.call_tool("create_worker", {
@@ -124,7 +124,7 @@ class TestServerToolCalls:
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("agent_fleet_supervisor.supervisor.build_worker_command", side_effect=_fake_build_sleep)
+    @patch("codefleet.supervisor.build_worker_command", side_effect=_fake_build_sleep)
     async def test_cancel_worker_tool(self, mock_build, supervisor, git_repo):
         server = create_server(supervisor=supervisor)
         result = await server.call_tool("create_worker", {
@@ -138,7 +138,7 @@ class TestServerToolCalls:
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("agent_fleet_supervisor.supervisor.build_worker_command", side_effect=_fake_build)
+    @patch("codefleet.supervisor.build_worker_command", side_effect=_fake_build)
     async def test_workflow_tools(self, mock_build, supervisor, git_repo):
         server = create_server(supervisor=supervisor)
 
@@ -179,7 +179,7 @@ class TestServerToolCalls:
         assert len(result) > 0
 
     @pytest.mark.asyncio
-    @patch("agent_fleet_supervisor.supervisor.build_worker_command", side_effect=_fake_build_sleep)
+    @patch("codefleet.supervisor.build_worker_command", side_effect=_fake_build_sleep)
     async def test_cancel_workflow_tool(self, mock_build, supervisor, git_repo):
         server = create_server(supervisor=supervisor)
         await server.call_tool("create_workflow", {

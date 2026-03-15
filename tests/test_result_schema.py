@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_fleet_supervisor.models import ResultStatus, TestStatus
-from agent_fleet_supervisor.result_schema import (
+from codefleet.models import ResultStatus, TestStatus
+from codefleet.result_schema import (
     ResultValidationError,
     parse_result_file,
     validate_result_data,

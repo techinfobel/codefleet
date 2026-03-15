@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_fleet_supervisor.worker_runtime import (
+from codefleet.worker_runtime import (
     WorkerProcess,
     build_codex_command,
     build_gemini_command,
