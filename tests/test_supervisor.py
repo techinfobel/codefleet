@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from codex_fleet_supervisor.models import WorkerStatus, WorkerStatusPayload
-from codex_fleet_supervisor.supervisor import (
+from agent_fleet_supervisor.models import ExecutorType, WorkerStatus, WorkerStatusPayload
+from agent_fleet_supervisor.supervisor import (
     FleetSupervisor,
     _sanitize_task_name,
     _generate_worker_id,
@@ -56,7 +56,7 @@ class TestHealthcheck:
     def test_healthcheck(self, supervisor):
         result = supervisor.healthcheck()
         assert result["ok"] is True
-        assert result["app"] == "codex-fleet-supervisor"
+        assert result["app"] == "agent-fleet-supervisor"
         assert result["git_found"] is True
         assert result["codex_found"] is True
         assert result["default_model"] == "gpt-5.4"
@@ -106,10 +106,10 @@ class TestCreateWorkerIntegration:
         """Helper to create a worker using a Python script instead of codex."""
         # Patch build_codex_command to use our Python script
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             # We'll dynamically set the command based on result_json_path
-            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
 
@@ -234,7 +234,7 @@ class TestCancelWorker:
         """Cancel a worker that is sleeping."""
         script = "import time; time.sleep(300)"
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -251,7 +251,7 @@ class TestCancelWorker:
         """Cannot cancel a worker that has already finished."""
         script = "pass"
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -277,7 +277,7 @@ class TestCleanupWorker:
         """Cannot cleanup a running worker."""
         script = "import time; time.sleep(300)"
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             payload = supervisor.create_worker(
@@ -304,9 +304,9 @@ class TestCleanupWorker:
             "open('__RESULT_PATH__', 'w'))"
         )
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
-            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build
@@ -351,7 +351,7 @@ class TestListWorkers:
         script = "import time; time.sleep(300)"
         workers_created = []
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
             for i in range(3):
@@ -375,7 +375,7 @@ class TestListWorkers:
         script_sleep = "import time; time.sleep(300)"
         script_done = "pass"
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script_sleep]
             running_payload = supervisor.create_worker(
@@ -430,9 +430,9 @@ class TestCollectWorkerResult:
             "open('__RESULT_PATH__', 'w'))"
         )
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
-            def fake_build(prompt_path, result_json_path, model=None, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build
@@ -472,7 +472,7 @@ class TestConcurrencyLimit:
 
         script = "import time; time.sleep(300)"
         with patch(
-            "codex_fleet_supervisor.supervisor.build_codex_command"
+            "agent_fleet_supervisor.supervisor.build_worker_command"
         ) as mock_build:
             mock_build.return_value = [sys.executable, "-c", script]
 
@@ -572,7 +572,7 @@ class TestStatePersistence:
             default_timeout=10,
         )
         # Insert a worker record directly into the store
-        from codex_fleet_supervisor.models import WorkerRecord
+        from agent_fleet_supervisor.models import WorkerRecord
         import time as t
 
         record = WorkerRecord(
@@ -608,3 +608,150 @@ class TestStatePersistence:
         assert status.status == WorkerStatus.SUCCEEDED
         assert status.task_name == "persistence test"
         sup2.close()
+
+
+class TestSpawnDepth:
+    """Test the max_spawn_depth enforcement."""
+
+    def test_root_worker_can_spawn_child(self, tmp_path, git_repo):
+        """With max_spawn_depth=1, a root worker can spawn one child."""
+        sup = FleetSupervisor(
+            base_dir=tmp_path / "fleet_depth",
+            allowed_repos=[str(git_repo)],
+            default_timeout=60,
+            max_concurrent=5,
+            max_spawn_depth=1,
+        )
+        script = "import time; time.sleep(300)"
+        with patch(
+            "agent_fleet_supervisor.supervisor.build_worker_command"
+        ) as mock_build:
+            mock_build.return_value = [sys.executable, "-c", script]
+
+            # Create root worker
+            root = sup.create_worker(
+                repo_path=str(git_repo),
+                task_name="root",
+                prompt="Root task",
+            )
+
+            # Root spawns a child — should succeed (depth of root = 1, 1 <= 1)
+            child = sup.create_worker(
+                repo_path=str(git_repo),
+                task_name="child",
+                prompt="Child task",
+                parent_worker_id=root.worker_id,
+            )
+            assert child.worker_id != root.worker_id
+
+            # Child tries to spawn grandchild — should fail (depth of child = 2, 2 > 1)
+            with pytest.raises(RuntimeError, match="Spawn depth limit"):
+                sup.create_worker(
+                    repo_path=str(git_repo),
+                    task_name="grandchild",
+                    prompt="Too deep",
+                    parent_worker_id=child.worker_id,
+                )
+
+        # Cleanup
+        for w in sup.list_workers():
+            if not w.status.is_terminal:
+                sup.cancel_worker(w.worker_id)
+        sup.close()
+
+    def test_depth_zero_blocks_all_children(self, tmp_path, git_repo):
+        """With max_spawn_depth=0, no worker can spawn children."""
+        sup = FleetSupervisor(
+            base_dir=tmp_path / "fleet_depth0",
+            allowed_repos=[str(git_repo)],
+            default_timeout=60,
+            max_spawn_depth=0,
+        )
+        script = "import time; time.sleep(300)"
+        with patch(
+            "agent_fleet_supervisor.supervisor.build_worker_command"
+        ) as mock_build:
+            mock_build.return_value = [sys.executable, "-c", script]
+
+            root = sup.create_worker(
+                repo_path=str(git_repo),
+                task_name="root",
+                prompt="Root",
+            )
+
+            with pytest.raises(RuntimeError, match="Spawn depth limit"):
+                sup.create_worker(
+                    repo_path=str(git_repo),
+                    task_name="child",
+                    prompt="Blocked",
+                    parent_worker_id=root.worker_id,
+                )
+
+        for w in sup.list_workers():
+            if not w.status.is_terminal:
+                sup.cancel_worker(w.worker_id)
+        sup.close()
+
+    def test_depth_two_allows_grandchildren(self, tmp_path, git_repo):
+        """With max_spawn_depth=2, root -> child -> grandchild is allowed."""
+        sup = FleetSupervisor(
+            base_dir=tmp_path / "fleet_depth2",
+            allowed_repos=[str(git_repo)],
+            default_timeout=60,
+            max_concurrent=10,
+            max_spawn_depth=2,
+        )
+        script = "import time; time.sleep(300)"
+        with patch(
+            "agent_fleet_supervisor.supervisor.build_worker_command"
+        ) as mock_build:
+            mock_build.return_value = [sys.executable, "-c", script]
+
+            root = sup.create_worker(
+                repo_path=str(git_repo), task_name="root", prompt="R"
+            )
+            child = sup.create_worker(
+                repo_path=str(git_repo), task_name="child", prompt="C",
+                parent_worker_id=root.worker_id,
+            )
+            grandchild = sup.create_worker(
+                repo_path=str(git_repo), task_name="grandchild", prompt="G",
+                parent_worker_id=child.worker_id,
+            )
+            assert grandchild.worker_id != child.worker_id
+
+            # Great-grandchild blocked (depth 3 > 2)
+            with pytest.raises(RuntimeError, match="Spawn depth limit"):
+                sup.create_worker(
+                    repo_path=str(git_repo), task_name="great-gc", prompt="X",
+                    parent_worker_id=grandchild.worker_id,
+                )
+
+        for w in sup.list_workers():
+            if not w.status.is_terminal:
+                sup.cancel_worker(w.worker_id)
+        sup.close()
+
+
+class TestClaudeExecutor:
+    def test_create_claude_worker_branch_prefix(self, supervisor, git_repo):
+        """Claude workers should get claude/ branch prefix."""
+        script = "import time; time.sleep(300)"
+        with patch(
+            "agent_fleet_supervisor.supervisor.build_worker_command"
+        ) as mock_build:
+            mock_build.return_value = [sys.executable, "-c", script]
+            payload = supervisor.create_worker(
+                repo_path=str(git_repo),
+                task_name="claude-test",
+                prompt="Test",
+                executor="claude",
+            )
+        assert payload.branch_name.startswith("claude/")
+        assert payload.executor == ExecutorType.CLAUDE
+        supervisor.cancel_worker(payload.worker_id)
+
+    def test_healthcheck_claude_found(self, supervisor):
+        result = supervisor.healthcheck()
+        assert "claude_found" in result
+        assert "claude_path" in result

@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from .models import WorkerRecord, WorkerStatus, WorkerStatusPayload
+from .models import ExecutorType, WorkerRecord, WorkerStatus, WorkerStatusPayload
 from .store import WorkerStore
 from .git_ops import (
     is_git_repo,
@@ -18,15 +18,20 @@ from .git_ops import (
 from .result_schema import parse_result_file, ResultValidationError
 from .worker_runtime import (
     WorkerProcess,
-    build_codex_command,
+    build_worker_command,
     get_codex_path,
+    get_gemini_path,
+    get_claude_path,
 )
 
 DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
 MAX_CONCURRENT_WORKERS = 10
+DEFAULT_MAX_SPAWN_DEPTH = 2
 
 
 def _sanitize_task_name(name: str) -> str:
@@ -47,9 +52,13 @@ class FleetSupervisor:
         db_path: Optional[Path | str] = None,
         allowed_repos: Optional[list[str]] = None,
         default_model: str = DEFAULT_MODEL,
+        default_gemini_model: str = DEFAULT_GEMINI_MODEL,
+        default_claude_model: str = DEFAULT_CLAUDE_MODEL,
         default_reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         default_timeout: int = DEFAULT_TIMEOUT,
         max_concurrent: int = MAX_CONCURRENT_WORKERS,
+        default_executor: str = "codex",
+        max_spawn_depth: int = DEFAULT_MAX_SPAWN_DEPTH,
     ):
         self.base_dir = Path(base_dir or DEFAULT_BASE_DIR).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -62,12 +71,26 @@ class FleetSupervisor:
             self.allowed_repos = [Path(r).resolve() for r in allowed_repos]
 
         self.default_model = default_model
+        self.default_gemini_model = default_gemini_model
+        self.default_claude_model = default_claude_model
         self.default_reasoning_effort = default_reasoning_effort
         self.default_timeout = default_timeout
         self.max_concurrent = max_concurrent
+        self.default_executor = ExecutorType(default_executor)
+        self.max_spawn_depth = max_spawn_depth
 
         # In-memory map of active workers
         self._active_workers: dict[str, WorkerProcess] = {}
+
+        # Lazy-init workflow engine
+        self._workflow_engine = None
+
+    @property
+    def workflow_engine(self):
+        if self._workflow_engine is None:
+            from .workflow import WorkflowEngine
+            self._workflow_engine = WorkflowEngine(self)
+        return self._workflow_engine
 
     def _is_repo_allowed(self, repo_path: Path) -> bool:
         if self.allowed_repos is None:
@@ -80,17 +103,27 @@ class FleetSupervisor:
 
     def healthcheck(self) -> dict:
         codex_path = get_codex_path()
+        gemini_path = get_gemini_path()
+        claude_path = get_claude_path()
         git_path = get_git_path()
         return {
-            "ok": bool(codex_path and git_path),
-            "app": "codex-fleet-supervisor",
+            "ok": bool((codex_path or gemini_path or claude_path) and git_path),
+            "app": "agent-fleet-supervisor",
             "db_path": str(self.db_path),
             "base_dir": str(self.base_dir),
             "codex_found": codex_path is not None,
             "codex_path": codex_path or "",
+            "gemini_found": gemini_path is not None,
+            "gemini_path": gemini_path or "",
+            "claude_found": claude_path is not None,
+            "claude_path": claude_path or "",
             "git_found": git_path is not None,
             "git_path": git_path or "",
             "default_model": self.default_model,
+            "default_gemini_model": self.default_gemini_model,
+            "default_claude_model": self.default_claude_model,
+            "default_executor": self.default_executor.value,
+            "max_spawn_depth": self.max_spawn_depth,
         }
 
     def create_worker(
@@ -100,13 +133,19 @@ class FleetSupervisor:
         prompt: str,
         base_ref: str = "HEAD",
         model: Optional[str] = None,
+        executor: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         profile: Optional[str] = None,
         tags: Optional[list[str]] = None,
         metadata: Optional[dict] = None,
+        extra_args: Optional[list[str]] = None,
         extra_codex_args: Optional[list[str]] = None,
         parent_worker_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        stage_index: Optional[int] = None,
+        existing_worktree_path: Optional[str] = None,
+        existing_branch_name: Optional[str] = None,
     ) -> WorkerStatusPayload:
         repo = Path(repo_path).resolve()
 
@@ -127,18 +166,45 @@ class FleetSupervisor:
                 f"Concurrency limit reached ({self.max_concurrent} workers running)"
             )
 
-        # Generate IDs and paths
-        model = model or self.default_model
+        # Enforce spawn depth limit.
+        # depth=1 means parent is a root worker. max_spawn_depth=1 allows
+        # root workers to spawn one level of children (depth 1 can spawn,
+        # depth 2+ cannot).
+        if parent_worker_id:
+            depth = self._compute_spawn_depth(parent_worker_id)
+            if depth > self.max_spawn_depth:
+                raise RuntimeError(
+                    f"Spawn depth limit reached ({self.max_spawn_depth}). "
+                    f"Worker {parent_worker_id} is at depth {depth}."
+                )
+
+        # Resolve executor
+        executor_type = ExecutorType(executor) if executor else self.default_executor
+
+        # Resolve model default based on executor
+        if model is None:
+            if executor_type == ExecutorType.GEMINI:
+                model = self.default_gemini_model
+            elif executor_type == ExecutorType.CLAUDE:
+                model = self.default_claude_model
+            else:
+                model = self.default_model
+
+        # Resolve other defaults
         reasoning_effort = reasoning_effort or self.default_reasoning_effort
         timeout_seconds = timeout_seconds or self.default_timeout
+
+        # Merge extra_args (extra_codex_args is deprecated alias)
+        merged_extra_args = extra_args or extra_codex_args
+
+        # Generate IDs and paths
         worker_id = _generate_worker_id()
         sanitized = _sanitize_task_name(task_name)
-        branch_name = f"codex/{sanitized}/{worker_id}"
+        branch_name = f"{executor_type.value}/{sanitized}/{worker_id}"
 
         worker_dir = self.base_dir / "workers" / worker_id
         worker_dir.mkdir(parents=True, exist_ok=True)
 
-        worktree_path = worker_dir / "worktree"
         prompt_path = worker_dir / "prompt.txt"
         result_json_path = worker_dir / "result.json"
         stdout_path = worker_dir / "stdout.log"
@@ -155,23 +221,32 @@ class FleetSupervisor:
             "repo_path": str(repo),
             "base_ref": base_ref,
             "model": model,
+            "executor": executor_type.value,
             "profile": profile,
             "tags": tags or [],
             "metadata": metadata or {},
             "parent_worker_id": parent_worker_id,
+            "workflow_id": workflow_id,
+            "stage_index": stage_index,
         }
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-        # Create worktree
-        create_worktree(repo, worktree_path, branch_name, base_ref)
+        # Handle worktree: use existing or create new
+        if existing_worktree_path and existing_branch_name:
+            worktree_path = Path(existing_worktree_path)
+            branch_name = existing_branch_name
+        else:
+            worktree_path = worker_dir / "worktree"
+            create_worktree(repo, worktree_path, branch_name, base_ref)
 
         # Build command
-        cmd = build_codex_command(
+        cmd = build_worker_command(
+            executor=executor_type.value,
             prompt_path=prompt_path,
             result_json_path=result_json_path,
             model=model,
             reasoning_effort=reasoning_effort,
-            extra_args=extra_codex_args,
+            extra_args=merged_extra_args,
         )
 
         now = time.time()
@@ -185,6 +260,7 @@ class FleetSupervisor:
             worktree_path=str(worktree_path),
             worker_dir=str(worker_dir),
             model=model,
+            executor=executor_type,
             profile=profile,
             status=WorkerStatus.PENDING,
             created_at=now,
@@ -200,6 +276,8 @@ class FleetSupervisor:
             parent_worker_id=parent_worker_id,
             tags=tags or [],
             metadata=metadata or {},
+            workflow_id=workflow_id,
+            stage_index=stage_index,
         )
 
         self.store.insert_worker(record)
@@ -228,6 +306,18 @@ class FleetSupervisor:
         # Refresh record
         record = self.store.get_worker(worker_id)
         return WorkerStatusPayload.from_record(record)
+
+    def _compute_spawn_depth(self, worker_id: str) -> int:
+        """Walk the parent_worker_id chain to compute spawn depth."""
+        depth = 0
+        current_id = worker_id
+        while current_id:
+            record = self.store.get_worker(current_id)
+            if record is None:
+                break
+            depth += 1
+            current_id = record.parent_worker_id
+        return depth
 
     def _on_worker_complete(
         self, worker_id: str, exit_code: int, error: Optional[str]
@@ -277,6 +367,17 @@ class FleetSupervisor:
 
         # Remove from active workers
         self._active_workers.pop(worker_id, None)
+
+        # If this worker is part of a workflow, notify the workflow engine
+        record = self.store.get_worker(worker_id)
+        if record and record.workflow_id is not None and record.stage_index is not None:
+            try:
+                self.workflow_engine.on_stage_complete(
+                    worker_id, record.workflow_id, record.stage_index
+                )
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()  # Log for debugging, but don't crash
 
     def get_worker_status(self, worker_id: str) -> WorkerStatusPayload:
         record = self.store.get_worker(worker_id)
@@ -416,6 +517,26 @@ class FleetSupervisor:
             )
 
         return cleanup_summary
+
+    # --- Workflow delegation ---
+
+    def create_workflow(self, **kwargs):
+        return self.workflow_engine.create_workflow(**kwargs)
+
+    def get_workflow_status(self, workflow_id: str):
+        return self.workflow_engine.get_workflow_status(workflow_id)
+
+    def list_workflows(self, **kwargs):
+        return self.workflow_engine.list_workflows(**kwargs)
+
+    def cancel_workflow(self, workflow_id: str):
+        return self.workflow_engine.cancel_workflow(workflow_id)
+
+    def collect_workflow_result(self, **kwargs):
+        return self.workflow_engine.collect_workflow_result(**kwargs)
+
+    def cleanup_workflow(self, workflow_id: str):
+        return self.workflow_engine.cleanup_workflow(workflow_id)
 
     @staticmethod
     def _tail_file(path: Path, lines: int) -> str:

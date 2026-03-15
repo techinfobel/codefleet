@@ -5,8 +5,16 @@ import time
 
 import pytest
 
-from codex_fleet_supervisor.models import WorkerRecord, WorkerStatus
-from codex_fleet_supervisor.store import WorkerStore
+from agent_fleet_supervisor.models import (
+    ExecutorType,
+    StageDefinition,
+    StageState,
+    WorkerRecord,
+    WorkerStatus,
+    WorkflowRecord,
+    WorkflowStatus,
+)
+from agent_fleet_supervisor.store import WorkerStore
 
 
 def _make_record(worker_id="w_test001", **overrides):
@@ -216,3 +224,122 @@ class TestWorkerStore:
         assert r.status == WorkerStatus.SUCCEEDED
         assert r.exit_code == 0
         assert r.ended_at > r.started_at
+
+
+class TestExecutorField:
+    def test_default_executor(self, store):
+        record = _make_record(worker_id="w_exec_default")
+        store.insert_worker(record)
+        retrieved = store.get_worker("w_exec_default")
+        assert retrieved.executor == ExecutorType.CODEX
+
+    def test_gemini_executor(self, store):
+        record = _make_record(worker_id="w_exec_gemini", executor=ExecutorType.GEMINI)
+        store.insert_worker(record)
+        retrieved = store.get_worker("w_exec_gemini")
+        assert retrieved.executor == ExecutorType.GEMINI
+
+    def test_workflow_fields(self, store):
+        record = _make_record(
+            worker_id="w_wf_test",
+            workflow_id="wf_abc",
+            stage_index=2,
+        )
+        store.insert_worker(record)
+        retrieved = store.get_worker("w_wf_test")
+        assert retrieved.workflow_id == "wf_abc"
+        assert retrieved.stage_index == 2
+
+
+class TestWorkflowStore:
+    def _make_workflow(self, workflow_id="wf_test001", **overrides):
+        defaults = dict(
+            workflow_id=workflow_id,
+            name="test workflow",
+            status=WorkflowStatus.PENDING,
+            repo_path="/tmp/repo",
+            base_ref="HEAD",
+            task_prompt="Do something",
+            stages=[
+                StageDefinition(
+                    name="s0",
+                    executor=ExecutorType.CODEX,
+                    prompt_template="{task_prompt}",
+                ),
+            ],
+            stage_states={0: StageState()},
+            created_at=time.time(),
+        )
+        defaults.update(overrides)
+        return WorkflowRecord(**defaults)
+
+    def test_insert_and_get(self, store):
+        record = self._make_workflow()
+        store.insert_workflow(record)
+        retrieved = store.get_workflow("wf_test001")
+        assert retrieved is not None
+        assert retrieved.workflow_id == "wf_test001"
+        assert retrieved.name == "test workflow"
+        assert retrieved.status == WorkflowStatus.PENDING
+        assert len(retrieved.stages) == 1
+        assert retrieved.stages[0].name == "s0"
+
+    def test_get_nonexistent(self, store):
+        assert store.get_workflow("wf_nope") is None
+
+    def test_update_status(self, store):
+        store.insert_workflow(self._make_workflow())
+        store.update_workflow("wf_test001", status=WorkflowStatus.RUNNING)
+        retrieved = store.get_workflow("wf_test001")
+        assert retrieved.status == WorkflowStatus.RUNNING
+
+    def test_update_stage_states(self, store):
+        store.insert_workflow(self._make_workflow())
+        new_states = {0: StageState(worker_id="w_abc", status=WorkerStatus.SUCCEEDED)}
+        store.update_workflow("wf_test001", stage_states=new_states)
+        retrieved = store.get_workflow("wf_test001")
+        assert retrieved.stage_states[0].worker_id == "w_abc"
+        assert retrieved.stage_states[0].status == WorkerStatus.SUCCEEDED
+
+    def test_list_workflows(self, store):
+        for i in range(3):
+            store.insert_workflow(
+                self._make_workflow(
+                    workflow_id=f"wf_list{i:03d}",
+                    created_at=time.time() + i,
+                )
+            )
+        workflows = store.list_workflows()
+        assert len(workflows) == 3
+        assert workflows[0].workflow_id == "wf_list002"
+
+    def test_list_with_status_filter(self, store):
+        store.insert_workflow(
+            self._make_workflow(workflow_id="wf_run", status=WorkflowStatus.RUNNING)
+        )
+        store.insert_workflow(
+            self._make_workflow(workflow_id="wf_done", status=WorkflowStatus.SUCCEEDED)
+        )
+        running = store.list_workflows(statuses=["running"])
+        assert len(running) == 1
+        assert running[0].workflow_id == "wf_run"
+
+    def test_multi_stage_roundtrip(self, store):
+        stages = [
+            StageDefinition(name="impl", executor=ExecutorType.CODEX, prompt_template="{task_prompt}"),
+            StageDefinition(name="review", executor=ExecutorType.GEMINI, prompt_template="Review: {stage_0_summary}", depends_on=[0]),
+        ]
+        record = self._make_workflow(
+            workflow_id="wf_multi",
+            stages=stages,
+            stage_states={
+                0: StageState(worker_id="w_1", status=WorkerStatus.SUCCEEDED),
+                1: StageState(),
+            },
+        )
+        store.insert_workflow(record)
+        retrieved = store.get_workflow("wf_multi")
+        assert len(retrieved.stages) == 2
+        assert retrieved.stages[1].executor == ExecutorType.GEMINI
+        assert retrieved.stages[1].depends_on == [0]
+        assert retrieved.stage_states[0].worker_id == "w_1"

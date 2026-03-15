@@ -4,14 +4,21 @@ import time
 
 import pytest
 
-from codex_fleet_supervisor.models import (
+from agent_fleet_supervisor.models import (
+    ExecutorType,
     ResultStatus,
+    StageDefinition,
+    StageState,
     TestResult,
     TestStatus,
     WorkerRecord,
     WorkerResult,
     WorkerStatus,
     WorkerStatusPayload,
+    WorkflowRecord,
+    WorkflowStatus,
+    WorkflowStatusPayload,
+    WorktreeStrategy,
 )
 
 
@@ -228,3 +235,158 @@ class TestWorkerStatusPayload:
         data = payload.model_dump()
         assert data["worker_id"] == "w_ser"
         assert data["status"] == "succeeded"
+
+
+class TestExecutorType:
+    def test_values(self):
+        assert ExecutorType.CODEX.value == "codex"
+        assert ExecutorType.GEMINI.value == "gemini"
+
+    def test_from_string(self):
+        assert ExecutorType("codex") == ExecutorType.CODEX
+        assert ExecutorType("gemini") == ExecutorType.GEMINI
+
+    def test_worker_record_default(self):
+        record = WorkerRecord(
+            worker_id="w_ex",
+            task_name="t",
+            repo_path="/r",
+            branch_name="b",
+            worktree_path="/w",
+            worker_dir="/d",
+            model="m",
+            status=WorkerStatus.PENDING,
+            created_at=time.time(),
+            timeout_seconds=60,
+            codex_command="[]",
+            prompt="p",
+            result_json_path="/rj",
+            stdout_path="/o",
+            stderr_path="/e",
+            prompt_path="/pp",
+            meta_path="/mp",
+        )
+        assert record.executor == ExecutorType.CODEX
+
+    def test_worker_record_gemini(self):
+        record = WorkerRecord(
+            worker_id="w_gem",
+            task_name="t",
+            repo_path="/r",
+            branch_name="b",
+            worktree_path="/w",
+            worker_dir="/d",
+            model="gemini-3.1-pro-preview",
+            executor=ExecutorType.GEMINI,
+            status=WorkerStatus.PENDING,
+            created_at=time.time(),
+            timeout_seconds=60,
+            codex_command="[]",
+            prompt="p",
+            result_json_path="/rj",
+            stdout_path="/o",
+            stderr_path="/e",
+            prompt_path="/pp",
+            meta_path="/mp",
+        )
+        assert record.executor == ExecutorType.GEMINI
+
+    def test_payload_includes_executor(self):
+        record = WorkerRecord(
+            worker_id="w_ex2",
+            task_name="t",
+            repo_path="/r",
+            branch_name="b",
+            worktree_path="/w",
+            worker_dir="/d",
+            model="m",
+            executor=ExecutorType.GEMINI,
+            status=WorkerStatus.PENDING,
+            created_at=time.time(),
+            timeout_seconds=60,
+            codex_command="[]",
+            prompt="p",
+            result_json_path="/rj",
+            stdout_path="/o",
+            stderr_path="/e",
+            prompt_path="/pp",
+            meta_path="/mp",
+        )
+        payload = WorkerStatusPayload.from_record(record)
+        assert payload.executor == ExecutorType.GEMINI
+
+
+class TestWorktreeStrategy:
+    def test_values(self):
+        assert WorktreeStrategy.NEW.value == "new"
+        assert WorktreeStrategy.INHERIT.value == "inherit"
+
+
+class TestWorkflowModels:
+    def test_stage_definition(self):
+        sd = StageDefinition(
+            name="impl",
+            executor=ExecutorType.CODEX,
+            prompt_template="{task_prompt}",
+        )
+        assert sd.worktree_strategy == WorktreeStrategy.INHERIT
+        assert sd.depends_on == []
+        assert sd.model is None
+
+    def test_workflow_status_values(self):
+        assert WorkflowStatus.PENDING.value == "pending"
+        assert WorkflowStatus.RUNNING.value == "running"
+        assert WorkflowStatus.SUCCEEDED.value == "succeeded"
+        assert WorkflowStatus.FAILED.value == "failed"
+        assert WorkflowStatus.CANCELLED.value == "cancelled"
+
+    def test_stage_state_defaults(self):
+        ss = StageState()
+        assert ss.worker_id is None
+        assert ss.status == WorkerStatus.PENDING
+
+    def test_workflow_record(self):
+        now = time.time()
+        record = WorkflowRecord(
+            workflow_id="wf_test",
+            name="test-wf",
+            status=WorkflowStatus.RUNNING,
+            repo_path="/repo",
+            base_ref="HEAD",
+            task_prompt="Do stuff",
+            stages=[
+                StageDefinition(name="s0", executor=ExecutorType.CODEX, prompt_template="x"),
+            ],
+            stage_states={0: StageState()},
+            created_at=now,
+        )
+        assert record.workflow_id == "wf_test"
+        assert len(record.stages) == 1
+
+    def test_workflow_status_payload_from_record(self):
+        now = time.time()
+        record = WorkflowRecord(
+            workflow_id="wf_p",
+            name="payload-test",
+            status=WorkflowStatus.SUCCEEDED,
+            repo_path="/repo",
+            base_ref="HEAD",
+            task_prompt="task",
+            stages=[
+                StageDefinition(name="s0", executor=ExecutorType.CODEX, prompt_template="x"),
+                StageDefinition(name="s1", executor=ExecutorType.GEMINI, prompt_template="y", depends_on=[0]),
+            ],
+            stage_states={
+                0: StageState(worker_id="w_1", status=WorkerStatus.SUCCEEDED),
+                1: StageState(worker_id="w_2", status=WorkerStatus.SUCCEEDED),
+            },
+            created_at=now,
+            completed_at=now + 10,
+        )
+        payload = WorkflowStatusPayload.from_record(record)
+        assert payload.workflow_id == "wf_p"
+        assert payload.status == WorkflowStatus.SUCCEEDED
+        assert len(payload.stage_summary) == 2
+        assert payload.stage_summary[0]["name"] == "s0"
+        assert payload.stage_summary[0]["executor"] == "codex"
+        assert payload.stage_summary[1]["executor"] == "gemini"

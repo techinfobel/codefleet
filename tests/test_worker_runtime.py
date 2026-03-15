@@ -7,10 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from codex_fleet_supervisor.worker_runtime import (
+from agent_fleet_supervisor.worker_runtime import (
     WorkerProcess,
     build_codex_command,
+    build_gemini_command,
+    build_claude_command,
+    build_worker_command,
     get_codex_path,
+    get_gemini_path,
+    get_claude_path,
 )
 
 
@@ -46,10 +51,172 @@ class TestBuildCodexCommand:
         assert "/some/dir" in cmd
 
 
+class TestBuildGeminiCommand:
+    def test_basic_command(self, tmp_path):
+        prompt_path = tmp_path / "prompt.txt"
+        result_path = tmp_path / "result.json"
+        cmd = build_gemini_command(prompt_path, result_path)
+        assert cmd[0] == "gemini"
+        assert "-p" in cmd
+        assert "--approval-mode" in cmd
+        assert "yolo" in cmd
+        assert "--sandbox" in cmd
+        assert "false" in cmd
+        assert "--output-format" in cmd
+        assert "json" in cmd
+        assert "-m" in cmd
+        assert "gemini-3.1-pro-preview" in cmd
+
+    def test_custom_model(self, tmp_path):
+        cmd = build_gemini_command(
+            tmp_path / "p.txt",
+            tmp_path / "r.json",
+            model="gemini-2.0-flash",
+        )
+        idx = cmd.index("-m")
+        assert cmd[idx + 1] == "gemini-2.0-flash"
+
+    def test_extra_args(self, tmp_path):
+        cmd = build_gemini_command(
+            tmp_path / "p.txt",
+            tmp_path / "r.json",
+            extra_args=["--sandbox", "false"],
+        )
+        assert "--sandbox" in cmd
+        assert "false" in cmd
+
+
+class TestBuildClaudeCommand:
+    def test_basic_command(self, tmp_path):
+        prompt_path = tmp_path / "prompt.txt"
+        result_path = tmp_path / "result.json"
+        cmd = build_claude_command(prompt_path, result_path)
+        assert cmd[0] == "claude"
+        assert "-p" in cmd
+        assert "--dangerously-skip-permissions" in cmd
+        assert "--output-format" in cmd
+        assert "json" in cmd
+        assert "--model" in cmd
+        assert "claude-sonnet-4-6" in cmd
+        # Default effort is high
+        assert "--effort" in cmd
+        assert "high" in cmd
+
+    def test_custom_model(self, tmp_path):
+        cmd = build_claude_command(
+            tmp_path / "p.txt",
+            tmp_path / "r.json",
+            model="claude-opus-4-6",
+        )
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "claude-opus-4-6"
+
+    def test_custom_effort(self, tmp_path):
+        cmd = build_claude_command(
+            tmp_path / "p.txt",
+            tmp_path / "r.json",
+            effort="max",
+        )
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "max"
+
+    def test_extra_args(self, tmp_path):
+        cmd = build_claude_command(
+            tmp_path / "p.txt",
+            tmp_path / "r.json",
+            extra_args=["--max-budget-usd", "5"],
+        )
+        assert "--max-budget-usd" in cmd
+        assert "5" in cmd
+
+
+class TestBuildWorkerCommand:
+    def test_dispatch_codex(self, tmp_path):
+        cmd = build_worker_command(
+            executor="codex",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="gpt-5.4",
+        )
+        assert cmd[0] == "codex"
+
+    def test_dispatch_gemini(self, tmp_path):
+        cmd = build_worker_command(
+            executor="gemini",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="gemini-3.1-pro-preview",
+        )
+        assert cmd[0] == "gemini"
+
+    def test_dispatch_claude(self, tmp_path):
+        cmd = build_worker_command(
+            executor="claude",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="claude-sonnet-4-6",
+        )
+        assert cmd[0] == "claude"
+
+    def test_codex_gets_reasoning_effort(self, tmp_path):
+        cmd = build_worker_command(
+            executor="codex",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="gpt-5.4",
+            reasoning_effort="high",
+        )
+        assert any("reasoning_effort" in arg for arg in cmd)
+
+    def test_gemini_ignores_reasoning_effort(self, tmp_path):
+        cmd = build_worker_command(
+            executor="gemini",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="gemini-3.1-pro-preview",
+            reasoning_effort="high",
+        )
+        assert not any("reasoning_effort" in arg for arg in cmd)
+
+    def test_claude_maps_reasoning_effort_to_effort(self, tmp_path):
+        cmd = build_worker_command(
+            executor="claude",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="claude-sonnet-4-6",
+            reasoning_effort="max",
+        )
+        assert "--effort" in cmd
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "max"
+
+    def test_claude_defaults_effort_high(self, tmp_path):
+        cmd = build_worker_command(
+            executor="claude",
+            prompt_path=tmp_path / "p.txt",
+            result_json_path=tmp_path / "r.json",
+            model="claude-sonnet-4-6",
+        )
+        assert "--effort" in cmd
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "high"
+
+
 class TestGetCodexPath:
     def test_returns_string_or_none(self):
         result = get_codex_path()
-        # codex should be installed per environment check
+        assert result is None or isinstance(result, str)
+
+
+class TestGetGeminiPath:
+    def test_returns_string_or_none(self):
+        result = get_gemini_path()
+        assert result is None or isinstance(result, str)
+
+
+class TestGetClaudePath:
+    def test_returns_string_or_none(self):
+        result = get_claude_path()
         assert result is None or isinstance(result, str)
 
 

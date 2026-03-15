@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from codex_fleet_supervisor.git_ops import (
+from agent_fleet_supervisor.git_ops import (
     GitError,
     create_worktree,
     delete_branch,

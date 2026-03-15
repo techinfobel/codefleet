@@ -13,15 +13,19 @@ def get_codex_path() -> str | None:
     return shutil.which("codex")
 
 
-def build_codex_command(
-    prompt_path: Path,
-    result_json_path: Path,
-    model: str = "gpt-5.4",
-    reasoning_effort: str = "xhigh",
-    extra_args: Optional[list[str]] = None,
-) -> list[str]:
-    """Build the codex exec command."""
-    instruction = (
+def get_gemini_path() -> str | None:
+    """Return the path to gemini, or None."""
+    return shutil.which("gemini")
+
+
+def get_claude_path() -> str | None:
+    """Return the path to claude, or None."""
+    return shutil.which("claude")
+
+
+def _result_instruction(prompt_path: Path, result_json_path: Path) -> str:
+    """Build the shared instruction string for any executor."""
+    return (
         f"Read the task prompt from {prompt_path}. "
         f"Work in the current directory (a git worktree). "
         f"Run relevant tests where appropriate. "
@@ -33,6 +37,17 @@ def build_codex_command(
         f'"status": "completed|blocked"}}'
     )
 
+
+def build_codex_command(
+    prompt_path: Path,
+    result_json_path: Path,
+    model: str = "gpt-5.4",
+    reasoning_effort: str = "xhigh",
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build the codex exec command."""
+    instruction = _result_instruction(prompt_path, result_json_path)
+
     cmd = ["codex", "exec", "--full-auto"]
     if model:
         cmd.extend(["--model", model])
@@ -42,6 +57,86 @@ def build_codex_command(
         cmd.extend(extra_args)
     cmd.append(instruction)
     return cmd
+
+
+def build_gemini_command(
+    prompt_path: Path,
+    result_json_path: Path,
+    model: str = "gemini-3.1-pro-preview",
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build the gemini CLI command."""
+    instruction = _result_instruction(prompt_path, result_json_path)
+
+    cmd = [
+        "gemini", "-p", instruction,
+        "--approval-mode", "yolo",
+        "--sandbox", "false",     # Disable sandbox so the agent can write files
+        "--output-format", "json",
+    ]
+    if model:
+        cmd.extend(["-m", model])
+    if extra_args:
+        cmd.extend(extra_args)
+    return cmd
+
+
+def build_claude_command(
+    prompt_path: Path,
+    result_json_path: Path,
+    model: str = "claude-sonnet-4-6",
+    effort: str = "high",
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build the claude CLI command."""
+    instruction = _result_instruction(prompt_path, result_json_path)
+
+    cmd = [
+        "claude", "-p", instruction,
+        "--dangerously-skip-permissions",
+        "--output-format", "json",
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    if effort:
+        cmd.extend(["--effort", effort])
+    if extra_args:
+        cmd.extend(extra_args)
+    return cmd
+
+
+def build_worker_command(
+    executor: str,
+    prompt_path: Path,
+    result_json_path: Path,
+    model: str,
+    reasoning_effort: Optional[str] = None,
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Dispatch to the correct command builder based on executor type."""
+    if executor == "gemini":
+        return build_gemini_command(
+            prompt_path=prompt_path,
+            result_json_path=result_json_path,
+            model=model,
+            extra_args=extra_args,
+        )
+    if executor == "claude":
+        return build_claude_command(
+            prompt_path=prompt_path,
+            result_json_path=result_json_path,
+            model=model,
+            effort=reasoning_effort or "high",
+            extra_args=extra_args,
+        )
+    # Default: codex
+    return build_codex_command(
+        prompt_path=prompt_path,
+        result_json_path=result_json_path,
+        model=model,
+        reasoning_effort=reasoning_effort or "xhigh",
+        extra_args=extra_args,
+    )
 
 
 class WorkerProcess:
