@@ -218,7 +218,7 @@ Available in stage `prompt_template` strings:
 | `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
 | `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker timeout (seconds) |
-| `FLEET_MAX_CONCURRENT` | `10` | Max simultaneous workers |
+| `FLEET_MAX_CONCURRENT` | `50` | Max simultaneous workers |
 | `FLEET_MAX_SPAWN_DEPTH` | `2` | How deep agents can recursively spawn sub-agents |
 | `FLEET_ALLOWED_REPOS` | *(all)* | Comma-separated allowlist of repo paths |
 | `FLEET_BASE_DIR` | `~/.codex-fleet` | Data directory for workers and DB |

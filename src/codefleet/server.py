@@ -27,7 +27,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
             ),
             default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "xhigh"),
             default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
-            max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "10")),
+            max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "50")),
             allowed_repos=allowed_repos,
             default_executor=os.environ.get("FLEET_DEFAULT_EXECUTOR", "codex"),
             max_spawn_depth=int(os.environ.get("FLEET_MAX_SPAWN_DEPTH", "2")),
