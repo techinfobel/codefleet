@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codefleet"
-version = "0.3.6"
+version = "0.3.7"
 description = "Orchestrate fleets of AI coding agents (Codex, Gemini, Claude) with multi-stage workflows"
 requires-python = ">=3.11"
 license = "MIT"
@@ -40,6 +40,7 @@ Issues = "https://github.com/techinfobel/codefleet/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src/codefleet"]

@@ -27,7 +27,7 @@ def is_git_repo(path: Path) -> bool:
 
 def resolve_ref(repo_path: Path, ref: str = "HEAD") -> str:
     """Resolve a git ref to a commit hash."""
-    result = _run_git(repo_path, "rev-parse", "--", ref)
+    result = _run_git(repo_path, "rev-parse", ref)
     if result.returncode != 0:
         raise GitError(f"Failed to resolve ref '{ref}': {result.stderr.strip()}")
     return result.stdout.strip()
