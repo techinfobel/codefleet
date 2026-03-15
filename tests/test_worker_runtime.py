@@ -97,7 +97,7 @@ class TestBuildClaudeCommand:
         assert "--output-format" in cmd
         assert "json" in cmd
         assert "--model" in cmd
-        assert "claude-sonnet-4-6" in cmd
+        assert "claude-opus-4-6" in cmd
         # Default effort is high
         assert "--effort" in cmd
         assert "high" in cmd
@@ -154,7 +154,7 @@ class TestBuildWorkerCommand:
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
         )
         assert cmd[0] == "claude"
 
@@ -183,7 +183,7 @@ class TestBuildWorkerCommand:
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
             reasoning_effort="max",
         )
         assert "--effort" in cmd
@@ -195,7 +195,7 @@ class TestBuildWorkerCommand:
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-sonnet-4-6",
+            model="claude-opus-4-6",
         )
         assert "--effort" in cmd
         idx = cmd.index("--effort")

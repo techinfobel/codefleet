@@ -84,7 +84,7 @@ def build_gemini_command(
 def build_claude_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-opus-4-6",
     effort: str = "high",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:

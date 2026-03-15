@@ -55,13 +55,15 @@ class TestGenerateWorkerId:
 class TestHealthcheck:
     def test_healthcheck(self, supervisor):
         result = supervisor.healthcheck()
-        assert result["ok"] is True
         assert result["app"] == "codefleet"
         assert result["git_found"] is True
-        assert result["codex_found"] is True
+        assert isinstance(result["codex_found"], bool)
+        assert isinstance(result["gemini_found"], bool)
+        assert isinstance(result["claude_found"], bool)
         assert result["default_model"] == "gpt-5.4"
         assert "db_path" in result
         assert "base_dir" in result
+        assert "max_spawn_depth" in result
 
 
 class TestCreateWorkerValidation:

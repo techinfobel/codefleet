@@ -37,6 +37,7 @@ class TestCreateServer:
         tool_names = {tool.name for tool in server._tool_manager.list_tools()}
         expected_tools = {
             "healthcheck",
+            "executor_guide",
             "create_worker",
             "get_worker_status",
             "list_workers",
@@ -74,6 +75,12 @@ class TestServerToolCalls:
     async def test_healthcheck_tool(self, supervisor):
         server = create_server(supervisor=supervisor)
         result = await server.call_tool("healthcheck", {})
+        assert len(result) > 0
+
+    @pytest.mark.asyncio
+    async def test_executor_guide_tool(self, supervisor):
+        server = create_server(supervisor=supervisor)
+        result = await server.call_tool("executor_guide", {})
         assert len(result) > 0
 
     @pytest.mark.asyncio

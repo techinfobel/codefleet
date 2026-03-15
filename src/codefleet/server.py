@@ -23,11 +23,11 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
             ),
             default_claude_model=os.environ.get(
-                "FLEET_CLAUDE_DEFAULT_MODEL", "claude-sonnet-4-6"
+                "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
             ),
             default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "xhigh"),
             default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
-            max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "10")),
+            max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "50")),
             allowed_repos=allowed_repos,
             default_executor=os.environ.get("FLEET_DEFAULT_EXECUTOR", "codex"),
             max_spawn_depth=int(os.environ.get("FLEET_MAX_SPAWN_DEPTH", "2")),
@@ -39,6 +39,74 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     def healthcheck() -> dict:
         """Return a basic capability report. Lets Claude verify the MCP server is reachable and the local environment is sane."""
         return supervisor.healthcheck()
+
+    @mcp.tool()
+    def executor_guide() -> dict:
+        """Return guidance on which executor to use for different task types.
+
+        Call this before creating workers or workflows to pick the best executor for each task.
+        Based on SWE-Bench, Terminal-Bench, and community benchmarks (March 2026)."""
+        return {
+            "codex": {
+                "model": "gpt-5.4",
+                "best_for": [
+                    "Terminal/CLI debugging and DevOps scripts",
+                    "Code review and PR review (found 500+ zero-days in testing)",
+                    "Git operations and build system troubleshooting",
+                    "Token-efficient execution (~4x fewer tokens than Claude)",
+                    "Quick targeted fixes and single-file changes",
+                ],
+                "weaker_at": [
+                    "Frontend/React (frequent mistakes on basic React tasks)",
+                    "Large-scale multi-file refactoring",
+                    "Extended sessions (can become erratic)",
+                ],
+                "benchmarks": "SWE-Bench Pro 57.7%, Terminal-Bench 77.3%",
+            },
+            "gemini": {
+                "model": "gemini-3.1-pro-preview",
+                "best_for": [
+                    "Scientific and research code (SciCode leader at 59.0%)",
+                    "UI/frontend generation from mockups, PDFs, or sketches",
+                    "Competitive programming tasks (LiveCodeBench Elo 2887)",
+                    "Large codebases that need full context (1M token window)",
+                    "Test template generation and standard validation patterns",
+                    "Budget-conscious tasks (generous free tier)",
+                ],
+                "weaker_at": [
+                    "First-pass correctness (50-60% vs Claude's 95%)",
+                    "Complex architectural refactoring",
+                    "Speed on complex projects (slower than Claude)",
+                ],
+                "benchmarks": "SWE-Bench 80.6%, Terminal-Bench 78.4%, SciCode 59.0%",
+            },
+            "claude": {
+                "model": "claude-opus-4-6",
+                "best_for": [
+                    "Multi-file architecture and complex refactoring",
+                    "First-pass code correctness (95% on first try)",
+                    "Security analysis and code review",
+                    "Issue-to-PR workflows (implementation + tests + docs)",
+                    "Codebase analysis and dependency mapping",
+                    "Orchestrating multi-agent workflows",
+                ],
+                "weaker_at": [
+                    "Token consumption (~4x more than Codex)",
+                    "Terminal-native tasks (65.4% on Terminal-Bench)",
+                    "Cost (Opus is expensive; use Sonnet for routine tasks)",
+                ],
+                "benchmarks": "SWE-Bench 80.8%, GPQA Diamond 91.3%",
+            },
+            "routing_rules": [
+                "For implement-then-review workflows: Codex implements, Claude reviews",
+                "For frontend/UI: Gemini implements, Claude reviews",
+                "For refactoring/architecture: Claude implements and reviews",
+                "For terminal/DevOps scripts: Codex only",
+                "For scientific code: Gemini only",
+                "For competitive/parallel implementation: Codex vs Claude, then Claude evaluates",
+                "For budget-sensitive batch work: Gemini",
+            ],
+        }
 
     @mcp.tool()
     def create_worker(
@@ -57,7 +125,12 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         extra_codex_args: Optional[list[str]] = None,
         parent_worker_id: Optional[str] = None,
     ) -> dict:
-        """Launch a new worker in an isolated git worktree. Supports 'codex', 'gemini', and 'claude' executors."""
+        """Launch a worker in an isolated git worktree.
+
+        Executor selection guide (call executor_guide for full details):
+        - 'codex': Best for terminal/CLI tasks, code review, DevOps, quick fixes. Token-efficient.
+        - 'gemini': Best for frontend/UI, scientific code, large codebases, budget tasks.
+        - 'claude': Best for multi-file refactoring, architecture, security, first-pass correctness."""
         result = supervisor.create_worker(
             repo_path=repo_path,
             task_name=task_name,
@@ -134,7 +207,14 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         base_ref: str = "HEAD",
         timeout_seconds: Optional[int] = None,
     ) -> dict:
-        """Define and start a multi-stage workflow. Stages form a DAG where each stage uses any executor (codex/gemini) and results flow between stages via prompt templates."""
+        """Define and start a multi-stage DAG workflow with cross-executor collaboration.
+
+        Recommended patterns (call executor_guide for full details):
+        - Backend implement + review: Codex implements -> Claude reviews -> Codex refines
+        - Frontend/UI: Gemini implements -> Claude reviews
+        - Complex refactoring: Claude implements and reviews
+        - Competitive: Codex + Claude implement in parallel -> Claude evaluates
+        - Scientific code: Gemini implements -> Claude reviews"""
         result = supervisor.create_workflow(
             name=name,
             repo_path=repo_path,

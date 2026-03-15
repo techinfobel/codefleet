@@ -26,11 +26,11 @@ from .worker_runtime import (
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
-DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_CLAUDE_MODEL = "claude-opus-4-6"
 DEFAULT_REASONING_EFFORT = "xhigh"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
-MAX_CONCURRENT_WORKERS = 10
+MAX_CONCURRENT_WORKERS = 50
 DEFAULT_MAX_SPAWN_DEPTH = 2
 
 

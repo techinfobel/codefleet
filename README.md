@@ -48,7 +48,7 @@ At least one of these AI CLIs must be installed:
 |-------|---------|--------|
 | **Codex** | `npm i -g @openai/codex` | `codex --version` |
 | **Gemini** | `npm i -g @anthropic-ai/gemini-cli` | `gemini --version` |
-| **Claude** | [claude.ai/download](https://claude.ai/download) | `claude --version` |
+| **Claude** | `npm i -g @anthropic-ai/claude-code` | `claude --version` |
 
 Plus **Git** and **Python 3.11+**.
 
@@ -216,9 +216,9 @@ Available in stage `prompt_template` strings:
 | `FLEET_DEFAULT_EXECUTOR` | `codex` | Default agent: `codex`, `gemini`, or `claude` |
 | `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
 | `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
-| `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-sonnet-4-6` | Default Claude model |
+| `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker timeout (seconds) |
-| `FLEET_MAX_CONCURRENT` | `10` | Max simultaneous workers |
+| `FLEET_MAX_CONCURRENT` | `50` | Max simultaneous workers |
 | `FLEET_MAX_SPAWN_DEPTH` | `2` | How deep agents can recursively spawn sub-agents |
 | `FLEET_ALLOWED_REPOS` | *(all)* | Comma-separated allowlist of repo paths |
 | `FLEET_BASE_DIR` | `~/.codex-fleet` | Data directory for workers and DB |
