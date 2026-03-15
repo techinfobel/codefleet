@@ -42,10 +42,11 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
 
     @mcp.tool()
     def executor_guide() -> dict:
-        """Return guidance on which executor to use for different task types.
+        """Return benchmark-backed guidance on executor strengths and weaknesses.
 
-        Call this before creating workers or workflows to pick the best executor for each task.
-        Based on SWE-Bench, Terminal-Bench, and community benchmarks (March 2026)."""
+        Only call this when the user explicitly asks which executor to use, or when
+        you genuinely don't know which executor fits the task. For most tasks the
+        inline hints in create_worker/create_workflow are sufficient."""
         return {
             "codex": {
                 "model": "gpt-5.4",
@@ -127,10 +128,10 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Launch a worker in an isolated git worktree.
 
-        Executor selection guide (call executor_guide for full details):
-        - 'codex': Best for terminal/CLI tasks, code review, DevOps, quick fixes. Token-efficient.
-        - 'gemini': Best for frontend/UI, scientific code, large codebases, budget tasks.
-        - 'claude': Best for multi-file refactoring, architecture, security, first-pass correctness."""
+        Executor hints (no need to call executor_guide for these):
+        - 'codex': terminal/CLI, code review, DevOps, quick fixes. Token-efficient.
+        - 'gemini': frontend/UI, scientific code, large codebases, budget tasks.
+        - 'claude': multi-file refactoring, architecture, security, first-pass correctness."""
         result = supervisor.create_worker(
             repo_path=repo_path,
             task_name=task_name,
@@ -209,12 +210,11 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Define and start a multi-stage DAG workflow with cross-executor collaboration.
 
-        Recommended patterns (call executor_guide for full details):
-        - Backend implement + review: Codex implements -> Claude reviews -> Codex refines
+        Common patterns:
+        - Backend: Codex implements -> Claude reviews -> Codex refines
         - Frontend/UI: Gemini implements -> Claude reviews
         - Complex refactoring: Claude implements and reviews
-        - Competitive: Codex + Claude implement in parallel -> Claude evaluates
-        - Scientific code: Gemini implements -> Claude reviews"""
+        - Competitive: Codex + Claude in parallel -> Claude evaluates"""
         result = supervisor.create_workflow(
             name=name,
             repo_path=repo_path,
