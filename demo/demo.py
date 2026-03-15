@@ -66,7 +66,7 @@ def main():
     time.sleep(0.3)
 
     # Stage 2: Review (Claude)
-    print(f"  {MAGENTA}Stage 2/3{RESET} \u2502 {BOLD}review{RESET} {DIM}(claude / claude-sonnet-4-6 / effort: high){RESET}")
+    print(f"  {MAGENTA}Stage 2/3{RESET} \u2502 {BOLD}review{RESET} {DIM}(claude / claude-opus-4-6 / effort: high){RESET}")
     spin_wait("Inheriting worktree from stage 1", 0.5, "same branch")
     spin_wait("Claude reviewing changes", 2.5, "review complete")
     print(f"         {CHECK} {GREEN}completed{RESET} \u2014 3 issues found: missing email format check, no rate limit, weak password regex")

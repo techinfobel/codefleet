@@ -23,7 +23,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
             ),
             default_claude_model=os.environ.get(
-                "FLEET_CLAUDE_DEFAULT_MODEL", "claude-sonnet-4-6"
+                "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
             ),
             default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "xhigh"),
             default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
