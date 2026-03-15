@@ -56,20 +56,20 @@ Plus **Git** and **Python 3.11+**.
 ## Register with Claude Code
 
 ```bash
-claude mcp add --global codefleet -- uvx codefleet
+claude mcp add -s user codefleet -- uvx codefleet
 ```
 
-That's it. The `--global` flag makes codefleet available in every project automatically. Restart Claude Code and the tools are ready.
+That's it. The `-s user` scope makes codefleet available in every project automatically. Restart Claude Code and the tools are ready.
 
 **With options:**
 ```bash
-claude mcp add --global codefleet \
-  --env FLEET_ALLOWED_REPOS=/path/to/repo-a,/path/to/repo-b \
-  --env FLEET_MAX_SPAWN_DEPTH=2 \
+claude mcp add -s user codefleet \
+  -e FLEET_ALLOWED_REPOS=/path/to/repo-a,/path/to/repo-b \
+  -e FLEET_MAX_SPAWN_DEPTH=2 \
   -- uvx codefleet
 ```
 
-**Project-only** (omit `--global` to register for the current project only):
+**Project-only** (omit `-s user` to register for the current project only):
 ```bash
 claude mcp add codefleet -- uvx codefleet
 ```
