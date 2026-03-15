@@ -588,7 +588,7 @@ class TestStatePersistence:
             status=WorkerStatus.SUCCEEDED,
             created_at=t.time(),
             timeout_seconds=60,
-            codex_command="[]",
+            command_json="[]",
             prompt="test",
             result_json_path=str(base_dir / "workers/w_persist_test/result.json"),
             stdout_path=str(base_dir / "workers/w_persist_test/stdout.log"),

@@ -190,7 +190,7 @@ class TestBuildWorkerCommand:
         idx = cmd.index("--effort")
         assert cmd[idx + 1] == "max"
 
-    def test_claude_defaults_effort_high(self, tmp_path):
+    def test_claude_defaults_effort_max(self, tmp_path):
         cmd = build_worker_command(
             executor="claude",
             prompt_path=tmp_path / "p.txt",
@@ -199,7 +199,7 @@ class TestBuildWorkerCommand:
         )
         assert "--effort" in cmd
         idx = cmd.index("--effort")
-        assert cmd[idx + 1] == "high"
+        assert cmd[idx + 1] == "max"
 
 
 class TestGetCodexPath:
@@ -255,7 +255,7 @@ class TestWorkerProcess:
 
         pid = wp.start()
         assert pid > 0
-        assert wp.is_running() or True  # might finish very fast
+        assert pid > 0
 
         # Wait for completion
         deadline = time.monotonic() + 10

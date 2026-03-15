@@ -20,7 +20,7 @@ from codefleet.models import (
     WorktreeStrategy,
 )
 from codefleet.supervisor import FleetSupervisor
-from codefleet.workflow import WorkflowEngine, _SafeDict
+from codefleet.workflow import WorkflowEngine
 
 
 # ---------------------------------------------------------------------------
@@ -153,20 +153,6 @@ class TestDAGValidation:
             StageDefinition(name="join", executor=ExecutorType.GEMINI, prompt_template="x", depends_on=[1, 2], worktree_strategy=WorktreeStrategy.NEW),
         ]
         WorkflowEngine._validate_dag(stages)
-
-
-# ---------------------------------------------------------------------------
-# SafeDict
-# ---------------------------------------------------------------------------
-
-class TestSafeDict:
-    def test_missing_key_returns_empty(self):
-        d = _SafeDict(a="hello")
-        assert "{a} {b}".format_map(d) == "hello "
-
-    def test_present_key_works(self):
-        d = _SafeDict(x="val")
-        assert d["x"] == "val"
 
 
 # ---------------------------------------------------------------------------

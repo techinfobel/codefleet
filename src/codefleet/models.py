@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import enum
+import json
+from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -37,23 +39,9 @@ class ResultStatus(str, enum.Enum):
     BLOCKED = "blocked"
 
 
-class TestStatus(str, enum.Enum):
-    PASSED = "passed"
-    FAILED = "failed"
-    NOT_RUN = "not_run"
-
-
-class TestResult(BaseModel):
-    command: str
-    status: TestStatus
-    details: str = ""
-
-
 class WorkerResult(BaseModel):
     summary: str
     files_changed: list[str] = Field(default_factory=list)
-    tests: list[TestResult] = Field(default_factory=list)
-    commits: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     status: ResultStatus
 
@@ -72,10 +60,10 @@ class WorkerRecord(BaseModel):
     created_at: float
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
-    timeout_seconds: int
+    timeout_seconds: int = Field(gt=0)
     pid: Optional[int] = None
     exit_code: Optional[int] = None
-    codex_command: str
+    command_json: str
     prompt: str
     result_json_path: str
     stdout_path: str
@@ -157,7 +145,6 @@ class WorkflowStatus(str, enum.Enum):
 class StageState(BaseModel):
     worker_id: Optional[str] = None
     status: WorkerStatus = WorkerStatus.PENDING
-    worktree_path: Optional[str] = None
 
 
 class WorkflowRecord(BaseModel):
@@ -206,3 +193,23 @@ class WorkflowStatusPayload(BaseModel):
             completed_at=record.completed_at,
             error_message=record.error_message,
         )
+
+
+def parse_result_file(path: Path) -> WorkerResult:
+    """Parse and validate a result.json file."""
+    if not path.exists():
+        raise FileNotFoundError(f"Result file not found: {path}")
+
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        raise ValueError(f"Result file is empty: {path}")
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in result file: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError("Result JSON must be an object")
+
+    return WorkerResult.model_validate(data)

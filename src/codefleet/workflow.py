@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -15,18 +16,13 @@ from .models import (
     WorkflowStatus,
     WorkflowStatusPayload,
     WorktreeStrategy,
+    parse_result_file,
 )
-from .result_schema import parse_result_file
 
 if TYPE_CHECKING:
     from .supervisor import FleetSupervisor
 
-
-class _SafeDict(dict):
-    """dict subclass that returns '' for missing keys in str.format_map()."""
-
-    def __missing__(self, key: str) -> str:
-        return ""
+logger = logging.getLogger(__name__)
 
 
 class WorkflowEngine:
@@ -79,12 +75,11 @@ class WorkflowEngine:
         root_indices = [i for i, s in enumerate(stage_defs) if not s.depends_on]
         with self._lock:
             for idx in root_indices:
-                self._start_stage(workflow_id, idx)
+                self._start_stage(workflow_id, idx, record=record)
 
-            self.supervisor.store.update_workflow(
+            record = self.supervisor.store.update_workflow(
                 workflow_id, status=WorkflowStatus.RUNNING
             )
-            record.status = WorkflowStatus.RUNNING
 
         return WorkflowStatusPayload.from_record(record)
 
@@ -113,11 +108,12 @@ class WorkflowEngine:
             if not state.status.is_terminal and state.worker_id:
                 try:
                     self.supervisor.cancel_worker(state.worker_id)
-                except (ValueError, RuntimeError):
-                    pass
+                except (ValueError, RuntimeError) as e:
+                    logger.debug("Could not cancel worker %s for workflow %s: %s",
+                                 state.worker_id, workflow_id, e)
                 state.status = WorkerStatus.CANCELLED
 
-        self.supervisor.store.update_workflow(
+        record = self.supervisor.store.update_workflow(
             workflow_id,
             status=WorkflowStatus.CANCELLED,
             stage_states=record.stage_states,
@@ -125,9 +121,6 @@ class WorkflowEngine:
             error_message="Cancelled by user",
         )
 
-        record.status = WorkflowStatus.CANCELLED
-        record.completed_at = time.time()
-        record.error_message = "Cancelled by user"
         return WorkflowStatusPayload.from_record(record)
 
     def collect_workflow_result(
@@ -232,8 +225,9 @@ class WorkflowEngine:
                 if idx != stage_index and not s.status.is_terminal and s.worker_id:
                     try:
                         self.supervisor.cancel_worker(s.worker_id)
-                    except (ValueError, RuntimeError):
-                        pass
+                    except (ValueError, RuntimeError) as e:
+                        logger.debug("Could not cancel worker %s during stage failure: %s",
+                                     s.worker_id, e)
                     s.status = WorkerStatus.CANCELLED
 
             self.supervisor.store.update_workflow(
@@ -262,7 +256,7 @@ class WorkflowEngine:
                 for dep in stage_def.depends_on
             )
             if all_deps_done:
-                self._start_stage(workflow_id, i)
+                self._start_stage(workflow_id, i, record=record)
 
         record = self.supervisor.store.get_workflow(workflow_id)
         statuses = [
@@ -285,10 +279,13 @@ class WorkflowEngine:
     # Internal
     # ------------------------------------------------------------------
 
-    def _start_stage(self, workflow_id: str, stage_index: int) -> str:
-        record = self.supervisor.store.get_workflow(workflow_id)
+    def _start_stage(
+        self, workflow_id: str, stage_index: int, *, record: Optional[WorkflowRecord] = None
+    ) -> str:
         if record is None:
-            raise ValueError(f"Workflow not found: {workflow_id}")
+            record = self.supervisor.store.get_workflow(workflow_id)
+            if record is None:
+                raise ValueError(f"Workflow not found: {workflow_id}")
         stage_def = record.stages[stage_index]
 
         rendered_prompt = self._render_prompt(record, stage_index)
@@ -323,7 +320,6 @@ class WorkflowEngine:
         state = record.stage_states.get(stage_index, StageState())
         state.worker_id = payload.worker_id
         state.status = WorkerStatus.RUNNING
-        state.worktree_path = payload.worktree_path
         record.stage_states[stage_index] = state
         self.supervisor.store.update_workflow(
             workflow_id, stage_states=record.stage_states
@@ -333,14 +329,13 @@ class WorkflowEngine:
 
     def _render_prompt(self, workflow: WorkflowRecord, stage_index: int) -> str:
         template = workflow.stages[stage_index].prompt_template
-        variables = _SafeDict(task_prompt=workflow.task_prompt)
+        variables = defaultdict(str, task_prompt=workflow.task_prompt)
 
-        worker_ids = [
-            workflow.stage_states[i].worker_id
-            for i in range(len(workflow.stages))
-            if workflow.stage_states.get(i, StageState()).status == WorkerStatus.SUCCEEDED
-            and workflow.stage_states.get(i, StageState()).worker_id
-        ]
+        worker_ids = []
+        for i in range(len(workflow.stages)):
+            state = workflow.stage_states.get(i, StageState())
+            if state.status == WorkerStatus.SUCCEEDED and state.worker_id:
+                worker_ids.append(state.worker_id)
 
         workers = {w.worker_id: w for w in self.supervisor.store.get_workers(worker_ids)} if worker_ids else {}
 
@@ -367,7 +362,8 @@ class WorkflowEngine:
                     f"stage_{i}_status": result.status.value,
                 })
             except Exception:
-                pass
+                logger.warning("Failed to parse result for stage %d (worker %s)",
+                               i, state.worker_id, exc_info=True)
 
         return template.format_map(variables)
 

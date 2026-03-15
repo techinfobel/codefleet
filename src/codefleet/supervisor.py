@@ -8,16 +8,22 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
-from .models import ExecutorType, WorkerRecord, WorkerStatus, WorkerStatusPayload
+from .models import (
+    ExecutorType,
+    WorkerRecord,
+    WorkerStatus,
+    WorkerStatusPayload,
+    parse_result_file,
+)
 from .store import WorkerStore
 from .git_ops import (
+    GitError,
     is_git_repo,
     create_worktree,
     remove_worktree,
     delete_branch,
     get_git_path,
 )
-from .result_schema import parse_result_file, ResultValidationError
 from .worker_runtime import (
     WorkerProcess,
     build_worker_command,
@@ -70,6 +76,11 @@ class FleetSupervisor:
         default_executor: str = "codex",
         max_spawn_depth: int = DEFAULT_MAX_SPAWN_DEPTH,
     ):
+        if default_timeout <= 0:
+            raise ValueError(f"default_timeout must be positive, got {default_timeout}")
+        if max_spawn_depth < 0:
+            raise ValueError(f"max_spawn_depth must be non-negative, got {max_spawn_depth}")
+
         self.base_dir = Path(base_dir or DEFAULT_BASE_DIR).resolve()
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -256,7 +267,7 @@ class FleetSupervisor:
             status=WorkerStatus.PENDING,
             created_at=now,
             timeout_seconds=timeout_seconds,
-            codex_command=json.dumps(cmd),
+            command_json=json.dumps(cmd),
             prompt=prompt,
             result_json_path=str(result_json_path),
             stdout_path=str(stdout_path),
@@ -286,14 +297,13 @@ class FleetSupervisor:
         pid = worker_proc.start()
         self._active_workers[worker_id] = worker_proc
 
-        self.store.update_worker(
+        record = self.store.update_worker(
             worker_id,
             status=WorkerStatus.RUNNING,
             started_at=time.time(),
             pid=pid,
         )
 
-        record = self.store.get_worker(worker_id)
         return WorkerStatusPayload.from_record(record)
 
     def _compute_spawn_depth(self, worker_id: str) -> int:
@@ -329,17 +339,15 @@ class FleetSupervisor:
             result_path = Path(record.result_json_path)
             try:
                 parse_result_file(result_path)
-            except ResultValidationError as e:
+            except (FileNotFoundError, ValueError) as e:
                 update["status"] = WorkerStatus.FAILED
                 update["error_message"] = f"Result validation failed: {e}"
             else:
                 update["status"] = WorkerStatus.SUCCEEDED
 
-        self.store.update_worker(worker_id, **update)
+        record = self.store.update_worker(worker_id, **update)
 
         self._active_workers.pop(worker_id, None)
-
-        record = self.store.get_worker(worker_id)
         if record and record.workflow_id is not None and record.stage_index is not None:
             try:
                 self.workflow_engine.on_stage_complete(
@@ -379,7 +387,7 @@ class FleetSupervisor:
             try:
                 result = parse_result_file(result_path)
                 payload["result"] = result.model_dump()
-            except ResultValidationError as e:
+            except (FileNotFoundError, ValueError) as e:
                 payload["result"] = None
                 payload["result_error"] = str(e)
         else:
@@ -409,14 +417,13 @@ class FleetSupervisor:
         if proc:
             proc.cancel()
 
-        self.store.update_worker(
+        record = self.store.update_worker(
             worker_id,
             status=WorkerStatus.CANCELLED,
             ended_at=time.time(),
             error_message="Cancelled by user",
         )
 
-        record = self.store.get_worker(worker_id)
         return WorkerStatusPayload.from_record(record)
 
     def cleanup_worker(
@@ -451,6 +458,9 @@ class FleetSupervisor:
             if worktree_path.exists():
                 remove_worktree(repo_path, worktree_path)
             cleanup_summary["worktree_removed"] = True
+        except GitError as e:
+            logger.warning("Git error removing worktree for worker %s: %s", worker_id, e)
+            cleanup_summary["errors"].append(f"Worktree removal: {e}")
         except Exception as e:
             cleanup_summary["errors"].append(f"Worktree removal: {e}")
 
@@ -458,6 +468,10 @@ class FleetSupervisor:
             try:
                 delete_branch(repo_path, record.branch_name)
                 cleanup_summary["branch_removed"] = True
+            except GitError as e:
+                logger.warning("Git error deleting branch %s for worker %s: %s",
+                               record.branch_name, worker_id, e)
+                cleanup_summary["errors"].append(f"Branch deletion: {e}")
             except Exception as e:
                 cleanup_summary["errors"].append(f"Branch deletion: {e}")
 

@@ -9,8 +9,6 @@ from codefleet.models import (
     ResultStatus,
     StageDefinition,
     StageState,
-    TestResult,
-    TestStatus,
     WorkerRecord,
     WorkerResult,
     WorkerStatus,
@@ -61,44 +59,16 @@ class TestResultStatus:
         assert ResultStatus.BLOCKED.value == "blocked"
 
 
-class TestTestStatus:
-    def test_values(self):
-        assert TestStatus.PASSED.value == "passed"
-        assert TestStatus.FAILED.value == "failed"
-        assert TestStatus.NOT_RUN.value == "not_run"
-
-
-class TestTestResult:
-    def test_create(self):
-        tr = TestResult(command="pytest", status=TestStatus.PASSED, details="2 passed")
-        assert tr.command == "pytest"
-        assert tr.status == TestStatus.PASSED
-        assert tr.details == "2 passed"
-
-    def test_default_details(self):
-        tr = TestResult(command="pytest", status=TestStatus.FAILED)
-        assert tr.details == ""
-
-
 class TestWorkerResult:
     def test_valid_completed(self):
         result = WorkerResult(
             summary="Added login feature",
             files_changed=["src/auth.py"],
-            tests=[
-                TestResult(
-                    command="pytest tests/test_auth.py",
-                    status=TestStatus.PASSED,
-                    details="3 passed",
-                )
-            ],
-            commits=["abc123"],
             next_steps=["Add rate limiting"],
             status=ResultStatus.COMPLETED,
         )
         assert result.summary == "Added login feature"
         assert len(result.files_changed) == 1
-        assert len(result.tests) == 1
         assert result.status == ResultStatus.COMPLETED
 
     def test_valid_blocked(self):
@@ -108,7 +78,6 @@ class TestWorkerResult:
         )
         assert result.status == ResultStatus.BLOCKED
         assert result.files_changed == []
-        assert result.tests == []
 
     def test_missing_required_fields(self):
         with pytest.raises(Exception):
@@ -142,7 +111,7 @@ class TestWorkerRecord:
             status=WorkerStatus.PENDING,
             created_at=time.time(),
             timeout_seconds=600,
-            codex_command='["codex", "exec", "test"]',
+            command_json='["codex", "exec", "test"]',
             prompt="Do something",
             result_json_path="/tmp/fleet/workers/w_test123/result.json",
             stdout_path="/tmp/fleet/workers/w_test123/stdout.log",
@@ -191,7 +160,7 @@ class TestWorkerStatusPayload:
             started_at=now + 1,
             timeout_seconds=300,
             pid=12345,
-            codex_command='["codex"]',
+            command_json='["codex"]',
             prompt="Do work",
             result_json_path="/fleet/workers/w_abc/result.json",
             stdout_path="/fleet/workers/w_abc/stdout.log",
@@ -223,7 +192,7 @@ class TestWorkerStatusPayload:
             status=WorkerStatus.SUCCEEDED,
             created_at=now,
             timeout_seconds=60,
-            codex_command="[]",
+            command_json="[]",
             prompt="test",
             result_json_path="/r.json",
             stdout_path="/o.log",
@@ -258,7 +227,7 @@ class TestExecutorType:
             status=WorkerStatus.PENDING,
             created_at=time.time(),
             timeout_seconds=60,
-            codex_command="[]",
+            command_json="[]",
             prompt="p",
             result_json_path="/rj",
             stdout_path="/o",
@@ -281,7 +250,7 @@ class TestExecutorType:
             status=WorkerStatus.PENDING,
             created_at=time.time(),
             timeout_seconds=60,
-            codex_command="[]",
+            command_json="[]",
             prompt="p",
             result_json_path="/rj",
             stdout_path="/o",
@@ -304,7 +273,7 @@ class TestExecutorType:
             status=WorkerStatus.PENDING,
             created_at=time.time(),
             timeout_seconds=60,
-            codex_command="[]",
+            command_json="[]",
             prompt="p",
             result_json_path="/rj",
             stdout_path="/o",

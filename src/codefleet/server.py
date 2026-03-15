@@ -1,9 +1,12 @@
+import logging
 import os
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from .supervisor import FleetSupervisor
+
+logger = logging.getLogger(__name__)
 
 
 def _default_supervisor() -> FleetSupervisor:
@@ -36,6 +39,17 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
 
     if supervisor is None:
         supervisor = _default_supervisor()
+
+    def _dump(payload):
+        """Call .model_dump() if available, otherwise return as-is."""
+        return payload.model_dump() if hasattr(payload, "model_dump") else payload
+
+    def _error_response(exc: Exception) -> dict:
+        """Build a structured error dict from an exception."""
+        error_type = type(exc).__name__
+        if not isinstance(exc, (ValueError, RuntimeError, FileNotFoundError)):
+            logger.warning("Unexpected error in MCP tool: %s", exc, exc_info=True)
+        return {"error": error_type, "details": str(exc)}
 
     # --- Worker tools ---
 
@@ -139,29 +153,35 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         - 'codex': terminal/CLI, code review, DevOps, quick fixes. Token-efficient.
         - 'gemini': frontend/UI, scientific code, large codebases, budget tasks.
         - 'claude': multi-file refactoring, architecture, security, first-pass correctness."""
-        result = supervisor.create_worker(
-            repo_path=repo_path,
-            task_name=task_name,
-            prompt=prompt,
-            base_ref=base_ref,
-            model=model,
-            executor=executor,
-            reasoning_effort=reasoning_effort,
-            timeout_seconds=timeout_seconds,
-            profile=profile,
-            tags=tags,
-            metadata=metadata,
-            extra_args=extra_args,
-            extra_codex_args=extra_codex_args,
-            parent_worker_id=parent_worker_id,
-        )
-        return result.model_dump()
+        try:
+            result = supervisor.create_worker(
+                repo_path=repo_path,
+                task_name=task_name,
+                prompt=prompt,
+                base_ref=base_ref,
+                model=model,
+                executor=executor,
+                reasoning_effort=reasoning_effort,
+                timeout_seconds=timeout_seconds,
+                profile=profile,
+                tags=tags,
+                metadata=metadata,
+                extra_args=extra_args,
+                extra_codex_args=extra_codex_args,
+                parent_worker_id=parent_worker_id,
+            )
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def get_worker_status(worker_id: str) -> dict:
         """Return current status and metadata for a worker."""
-        result = supervisor.get_worker_status(worker_id)
-        return result.model_dump()
+        try:
+            result = supervisor.get_worker_status(worker_id)
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def list_workers(
@@ -169,8 +189,11 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         limit: int = 25,
     ) -> dict:
         """List recent workers, optionally filtered by status."""
-        results = supervisor.list_workers(statuses=statuses, limit=limit)
-        return {"workers": [r.model_dump() for r in results], "count": len(results)}
+        try:
+            results = supervisor.list_workers(statuses=statuses, limit=limit)
+            return {"workers": [_dump(r) for r in results], "count": len(results)}
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def collect_worker_result(
@@ -179,17 +202,23 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         log_tail_lines: int = 80,
     ) -> dict:
         """Return worker metadata plus parsed result.json and optional log tails."""
-        return supervisor.collect_worker_result(
-            worker_id=worker_id,
-            include_logs=include_logs,
-            log_tail_lines=log_tail_lines,
-        )
+        try:
+            return supervisor.collect_worker_result(
+                worker_id=worker_id,
+                include_logs=include_logs,
+                log_tail_lines=log_tail_lines,
+            )
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def cancel_worker(worker_id: str) -> dict:
         """Cancel a running worker."""
-        result = supervisor.cancel_worker(worker_id)
-        return result.model_dump()
+        try:
+            result = supervisor.cancel_worker(worker_id)
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def cleanup_worker(
@@ -198,11 +227,14 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         remove_worktree_dir: bool = True,
     ) -> dict:
         """Remove worktree and optional branch for a terminal worker."""
-        return supervisor.cleanup_worker(
-            worker_id=worker_id,
-            remove_branch=remove_branch,
-            remove_worktree_dir=remove_worktree_dir,
-        )
+        try:
+            return supervisor.cleanup_worker(
+                worker_id=worker_id,
+                remove_branch=remove_branch,
+                remove_worktree_dir=remove_worktree_dir,
+            )
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     # --- Workflow tools ---
 
@@ -228,21 +260,27 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         - Complex refactoring: Claude implements and reviews
         - Competitive: Codex + Claude in parallel -> Claude evaluates
         - Fan-out: N parallel Codex workers (one per file/module) -> Claude reviews all"""
-        result = supervisor.create_workflow(
-            name=name,
-            repo_path=repo_path,
-            task_prompt=task_prompt,
-            stages=stages,
-            base_ref=base_ref,
-            timeout_seconds=timeout_seconds,
-        )
-        return result.model_dump()
+        try:
+            result = supervisor.create_workflow(
+                name=name,
+                repo_path=repo_path,
+                task_prompt=task_prompt,
+                stages=stages,
+                base_ref=base_ref,
+                timeout_seconds=timeout_seconds,
+            )
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def get_workflow_status(workflow_id: str) -> dict:
         """Return workflow state with per-stage worker statuses."""
-        result = supervisor.get_workflow_status(workflow_id)
-        return result.model_dump()
+        try:
+            result = supervisor.get_workflow_status(workflow_id)
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def list_workflows(
@@ -250,14 +288,20 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         limit: int = 25,
     ) -> dict:
         """List workflows with optional status filter."""
-        results = supervisor.list_workflows(statuses=statuses, limit=limit)
-        return {"workflows": [r.model_dump() for r in results], "count": len(results)}
+        try:
+            results = supervisor.list_workflows(statuses=statuses, limit=limit)
+            return {"workflows": [_dump(r) for r in results], "count": len(results)}
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def cancel_workflow(workflow_id: str) -> dict:
         """Cancel all running stages and mark workflow cancelled."""
-        result = supervisor.cancel_workflow(workflow_id)
-        return result.model_dump()
+        try:
+            result = supervisor.cancel_workflow(workflow_id)
+            return _dump(result)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def collect_workflow_result(
@@ -266,16 +310,22 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         include_logs: bool = False,
     ) -> dict:
         """Get the final stage's result (or all stages' results)."""
-        return supervisor.collect_workflow_result(
-            workflow_id=workflow_id,
-            include_all_stages=include_all_stages,
-            include_logs=include_logs,
-        )
+        try:
+            return supervisor.collect_workflow_result(
+                workflow_id=workflow_id,
+                include_all_stages=include_all_stages,
+                include_logs=include_logs,
+            )
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     @mcp.tool()
     def cleanup_workflow(workflow_id: str) -> dict:
         """Clean up all worktrees, branches, and worker dirs for a terminal workflow."""
-        return supervisor.cleanup_workflow(workflow_id)
+        try:
+            return supervisor.cleanup_workflow(workflow_id)
+        except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
+            return _error_response(exc)
 
     return mcp
 

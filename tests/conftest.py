@@ -1,8 +1,11 @@
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
+from codefleet.models import WorkerRecord, WorkerStatus
 from codefleet.store import WorkerStore
 from codefleet.supervisor import FleetSupervisor
 
@@ -67,3 +70,78 @@ def supervisor(tmp_path, git_repo):
     )
     yield sup
     sup.close()
+
+
+# ---------------------------------------------------------------------------
+# Shared test helpers
+# ---------------------------------------------------------------------------
+
+
+def fake_build_success(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+    """Return a command that writes a valid result.json and exits 0."""
+    script = (
+        "import json; "
+        "json.dump("
+        '{"summary":"done","status":"completed","files_changed":[],"next_steps":[]}, '
+        f"open('{result_json_path}', 'w'))"
+    )
+    return [sys.executable, "-c", script]
+
+
+def fake_build_fail(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+    """Return a command that exits non-zero."""
+    return [sys.executable, "-c", "import sys; sys.exit(1)"]
+
+
+def fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+    """Return a command that sleeps for 300 seconds."""
+    return [sys.executable, "-c", "import time; time.sleep(300)"]
+
+
+def make_worker_record(worker_id="w_test001", **overrides):
+    """Create a WorkerRecord with sensible defaults for tests."""
+    defaults = dict(
+        worker_id=worker_id,
+        task_name="test task",
+        repo_path="/tmp/repo",
+        branch_name=f"codex/test/{worker_id}",
+        worktree_path=f"/tmp/fleet/workers/{worker_id}/worktree",
+        worker_dir=f"/tmp/fleet/workers/{worker_id}",
+        model="gpt-5.4",
+        status=WorkerStatus.PENDING,
+        created_at=time.time(),
+        timeout_seconds=600,
+        command_json='["codex", "exec", "test"]',
+        prompt="Do something useful",
+        result_json_path=f"/tmp/fleet/workers/{worker_id}/result.json",
+        stdout_path=f"/tmp/fleet/workers/{worker_id}/stdout.log",
+        stderr_path=f"/tmp/fleet/workers/{worker_id}/stderr.log",
+        prompt_path=f"/tmp/fleet/workers/{worker_id}/prompt.txt",
+        meta_path=f"/tmp/fleet/workers/{worker_id}/meta.json",
+    )
+    defaults.update(overrides)
+    return WorkerRecord(**defaults)
+
+
+def wait_for_terminal(supervisor, worker_id, timeout=15):
+    """Poll until a worker reaches a terminal status."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = supervisor.get_worker_status(worker_id)
+        if status.status.is_terminal:
+            return status
+        time.sleep(0.2)
+    return supervisor.get_worker_status(worker_id)
+
+
+def wait_workflow_terminal(supervisor, workflow_id, timeout=30):
+    """Poll until a workflow reaches a terminal status."""
+    from codefleet.models import WorkflowStatus
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        wf = supervisor.get_workflow_status(workflow_id)
+        if wf.status in {WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}:
+            return wf
+        time.sleep(0.2)
+    return supervisor.get_workflow_status(workflow_id)
