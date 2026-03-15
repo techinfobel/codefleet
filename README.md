@@ -4,8 +4,8 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/v/codefleet" alt="PyPI"></a>
-  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/pyversions/codefleet" alt="Python"></a>
+  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/v/codefleet?cache=none" alt="PyPI"></a>
+  <a href="https://pypi.org/project/codefleet"><img src="https://img.shields.io/pypi/pyversions/codefleet?cache=none" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
 </p>
 
