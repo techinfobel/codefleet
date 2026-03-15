@@ -8,3 +8,5 @@ build/
 .pytest_cache/
 .DS_Store
 *.db
+demo/*.cast
+demo/*.svg

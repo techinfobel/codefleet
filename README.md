@@ -19,11 +19,9 @@ Claude Code  ──>  codefleet  ──>  Codex worker   (implement)
                              ──>  Codex worker    (refine from review)
 ```
 
-<!-- TODO: Replace with actual recording
 <p align="center">
   <img src="demo/demo.gif" alt="codefleet demo" width="700">
 </p>
--->
 
 ## Why
 
