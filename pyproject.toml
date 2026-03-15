@@ -35,6 +35,7 @@ codefleet = "codefleet.server:main"
 
 [project.urls]
 Homepage = "https://github.com/techinfobel/codefleet"
+Repository = "https://github.com/techinfobel/codefleet"
 Issues = "https://github.com/techinfobel/codefleet/issues"
 
 [tool.pytest.ini_options]
