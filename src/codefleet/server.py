@@ -128,6 +128,9 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Launch a worker in an isolated git worktree.
 
+        Prefer create_workflow for multi-step tasks. Use create_worker for simple one-off tasks
+        or when you want to launch multiple workers in parallel yourself.
+
         Executor hints (no need to call executor_guide for these):
         - 'codex': terminal/CLI, code review, DevOps, quick fixes. Token-efficient.
         - 'gemini': frontend/UI, scientific code, large codebases, budget tasks.
@@ -210,11 +213,17 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Define and start a multi-stage DAG workflow with cross-executor collaboration.
 
+        IMPORTANT: Maximize parallelism. Break work into the smallest independent units and
+        run them as parallel stages (depends_on=[]) rather than one big sequential stage.
+        For example, "refactor auth module" should become 5-10 parallel file-level stages
+        with a single fan-in review stage, NOT one stage that does everything.
+
         Common patterns:
         - Backend: Codex implements -> Claude reviews -> Codex refines
         - Frontend/UI: Gemini implements -> Claude reviews
         - Complex refactoring: Claude implements and reviews
-        - Competitive: Codex + Claude in parallel -> Claude evaluates"""
+        - Competitive: Codex + Claude in parallel -> Claude evaluates
+        - Fan-out: N parallel Codex workers (one per file/module) -> Claude reviews all"""
         result = supervisor.create_workflow(
             name=name,
             repo_path=repo_path,
