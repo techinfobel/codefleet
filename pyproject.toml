@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codefleet"
-version = "0.3.5"
+version = "0.3.6"
 description = "Orchestrate fleets of AI coding agents (Codex, Gemini, Claude) with multi-stage workflows"
 requires-python = ">=3.11"
 license = "MIT"

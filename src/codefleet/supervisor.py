@@ -42,6 +42,9 @@ DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
 MAX_CONCURRENT_WORKERS = 50
 DEFAULT_MAX_SPAWN_DEPTH = 2
+DEFAULT_RATE_LIMIT_RETRIES = 3
+DEFAULT_RATE_LIMIT_BASE_DELAY = 4.0
+DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
 
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
@@ -75,6 +78,9 @@ class FleetSupervisor:
         max_concurrent: int = MAX_CONCURRENT_WORKERS,
         default_executor: str = "codex",
         max_spawn_depth: int = DEFAULT_MAX_SPAWN_DEPTH,
+        rate_limit_max_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
+        rate_limit_base_delay: float = DEFAULT_RATE_LIMIT_BASE_DELAY,
+        rate_limit_max_delay: float = DEFAULT_RATE_LIMIT_MAX_DELAY,
     ):
         if default_timeout <= 0:
             raise ValueError(f"default_timeout must be positive, got {default_timeout}")
@@ -99,6 +105,9 @@ class FleetSupervisor:
         self.max_concurrent = max_concurrent
         self.default_executor = ExecutorType(default_executor)
         self.max_spawn_depth = max_spawn_depth
+        self.rate_limit_max_retries = rate_limit_max_retries
+        self.rate_limit_base_delay = rate_limit_base_delay
+        self.rate_limit_max_delay = rate_limit_max_delay
 
         self._active_workers: dict[str, WorkerProcess] = {}
         self._workflow_engine = None
@@ -292,6 +301,9 @@ class FleetSupervisor:
             stderr_path=stderr_path,
             timeout_seconds=timeout_seconds,
             on_complete=self._on_worker_complete,
+            max_retries=self.rate_limit_max_retries,
+            retry_base_delay=self.rate_limit_base_delay,
+            retry_max_delay=self.rate_limit_max_delay,
         )
 
         pid = worker_proc.start()
@@ -327,7 +339,12 @@ class FleetSupervisor:
             return
 
         now = time.time()
-        update = {"ended_at": now, "exit_code": exit_code}
+        update: dict = {"ended_at": now, "exit_code": exit_code}
+
+        # Persist retry count from the process
+        proc = self._active_workers.get(worker_id)
+        if proc and proc.retry_count > 0:
+            update["retry_count"] = proc.retry_count
 
         if error and "timed out" in error.lower():
             update["status"] = WorkerStatus.TIMED_OUT

@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import shutil
@@ -6,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 
 def get_codex_path() -> str | None:
@@ -137,7 +140,16 @@ def build_worker_command(
 
 
 class WorkerProcess:
-    """Manages a single worker subprocess."""
+    """Manages a single worker subprocess with automatic rate-limit retry."""
+
+    _RATE_LIMIT_PATTERNS = [
+        "429",
+        "rate limit",
+        "rate_limit",
+        "resource_exhausted",
+        "too many requests",
+        "quota exceeded",
+    ]
 
     def __init__(
         self,
@@ -148,6 +160,9 @@ class WorkerProcess:
         stderr_path: Path,
         timeout_seconds: int,
         on_complete: Optional[Callable[[str, int, Optional[str]], None]] = None,
+        max_retries: int = 0,
+        retry_base_delay: float = 4.0,
+        retry_max_delay: float = 60.0,
     ):
         self.worker_id = worker_id
         self.command = command
@@ -156,12 +171,21 @@ class WorkerProcess:
         self.stderr_path = stderr_path
         self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
+        self.retry_max_delay = retry_max_delay
         self._process: Optional[subprocess.Popen] = None
         self._monitor_thread: Optional[threading.Thread] = None
+        self._retry_count = 0
+        self._cancelled = threading.Event()
 
     @property
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process else None
+
+    @property
+    def retry_count(self) -> int:
+        return self._retry_count
 
     def start(self) -> int:
         """Start the worker process. Returns the PID."""
@@ -190,8 +214,18 @@ class WorkerProcess:
 
         return self._process.pid
 
+    def _is_rate_limited(self) -> bool:
+        """Check stderr for rate-limit indicators."""
+        try:
+            text = self.stderr_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).lower()
+            return any(p in text for p in self._RATE_LIMIT_PATTERNS)
+        except Exception:
+            return False
+
     def _monitor(self, stdout_f, stderr_f):
-        """Monitor the process for completion or timeout."""
+        """Monitor the process for completion, timeout, or rate-limit retry."""
         exit_code = -1
         error = None
         try:
@@ -199,6 +233,53 @@ class WorkerProcess:
             while True:
                 try:
                     exit_code = self._process.wait(timeout=1.0)
+
+                    # Check for rate limiting and retry
+                    if (
+                        exit_code != 0
+                        and self._retry_count < self.max_retries
+                        and not self._cancelled.is_set()
+                    ):
+                        stdout_f.close()
+                        stderr_f.close()
+                        if self._is_rate_limited():
+                            self._retry_count += 1
+                            delay = min(
+                                self.retry_base_delay
+                                * (2 ** (self._retry_count - 1)),
+                                self.retry_max_delay,
+                            )
+                            logger.info(
+                                "Worker %s rate-limited, retry %d/%d in %.0fs",
+                                self.worker_id,
+                                self._retry_count,
+                                self.max_retries,
+                                delay,
+                            )
+                            with open(self.stderr_path, "a") as f:
+                                f.write(
+                                    f"\n--- [codefleet] Rate limited. "
+                                    f"Retry {self._retry_count}/{self.max_retries} "
+                                    f"after {delay:.0f}s backoff ---\n"
+                                )
+                            if self._cancelled.wait(timeout=delay):
+                                exit_code = -1
+                                error = "Cancelled during retry backoff"
+                                return
+
+                            # Restart process (fresh stdout, append stderr)
+                            stdout_f = open(self.stdout_path, "w")
+                            stderr_f = open(self.stderr_path, "a")
+                            self._process = subprocess.Popen(
+                                self.command,
+                                cwd=str(self.cwd),
+                                stdout=stdout_f,
+                                stderr=stderr_f,
+                                start_new_session=True,
+                            )
+                            start_time = time.monotonic()
+                            continue
+
                     return
                 except subprocess.TimeoutExpired:
                     if time.monotonic() - start_time >= self.timeout_seconds:
@@ -229,7 +310,8 @@ class WorkerProcess:
             pass
 
     def cancel(self):
-        """Cancel the running worker."""
+        """Cancel the running worker (also interrupts retry backoff)."""
+        self._cancelled.set()
         self._terminate()
 
     def is_running(self) -> bool:

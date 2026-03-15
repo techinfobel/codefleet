@@ -401,3 +401,170 @@ class TestWorkerProcess:
         assert "line2" in stdout_content
         assert "err1" in stderr_content
         assert "err2" in stderr_content
+
+
+class TestRateLimitRetry:
+    """Test automatic retry on rate-limit (429) errors."""
+
+    def test_retry_on_rate_limit(self, tmp_path):
+        """Worker retries when stderr contains rate-limit indicator."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+        marker = tmp_path / "attempt"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        # Script file: first run writes "429" to stderr and exits 1,
+        # second run succeeds (uses a marker file to track attempts).
+        script_path = tmp_path / "retry_script.py"
+        script_path.write_text(
+            "import sys, os\n"
+            f"marker = {str(marker)!r}\n"
+            "if not os.path.exists(marker):\n"
+            "    open(marker, 'w').close()\n"
+            "    print('429 Too Many Requests', file=sys.stderr)\n"
+            "    sys.exit(1)\n"
+            "print('ok')\n"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_retry_429",
+            command=[sys.executable, str(script_path)],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+            on_complete=on_complete,
+            max_retries=2,
+            retry_base_delay=0.1,  # fast for tests
+            retry_max_delay=1.0,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 15
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        assert completed["exit_code"] == 0
+        assert wp.retry_count == 1
+        stderr_content = stderr_path.read_text()
+        assert "Rate limited" in stderr_content
+        assert "Retry 1/2" in stderr_content
+
+    def test_no_retry_without_rate_limit(self, tmp_path):
+        """Worker does NOT retry for non-rate-limit failures."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+
+        script = "import sys; print('some other error', file=sys.stderr); sys.exit(1)"
+
+        wp = WorkerProcess(
+            worker_id="w_no_retry",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+            on_complete=on_complete,
+            max_retries=2,
+            retry_base_delay=0.1,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 10
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        assert completed["exit_code"] == 1
+        assert wp.retry_count == 0
+
+    def test_retry_exhausted(self, tmp_path):
+        """Worker fails after exhausting all retries."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+
+        # Always fails with 429
+        script = "import sys; print('429 rate limit exceeded', file=sys.stderr); sys.exit(1)"
+
+        wp = WorkerProcess(
+            worker_id="w_exhaust",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+            on_complete=on_complete,
+            max_retries=2,
+            retry_base_delay=0.1,
+            retry_max_delay=0.5,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 15
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        assert completed["exit_code"] == 1
+        assert wp.retry_count == 2
+        stderr_content = stderr_path.read_text()
+        assert "Retry 1/2" in stderr_content
+        assert "Retry 2/2" in stderr_content
+
+    def test_cancel_during_retry_backoff(self, tmp_path):
+        """Cancel interrupts retry backoff sleep."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        # Always fails with 429, long backoff to give time to cancel
+        script = "import sys; print('429', file=sys.stderr); sys.exit(1)"
+
+        wp = WorkerProcess(
+            worker_id="w_cancel_retry",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+            on_complete=on_complete,
+            max_retries=3,
+            retry_base_delay=30.0,  # long delay so we can cancel during it
+        )
+
+        wp.start()
+
+        # Wait for the first attempt to fail and backoff to start
+        deadline = time.monotonic() + 10
+        while wp.retry_count < 1 and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        wp.cancel()
+
+        deadline = time.monotonic() + 5
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        assert "error" in completed
+        assert "cancelled" in completed["error"].lower()

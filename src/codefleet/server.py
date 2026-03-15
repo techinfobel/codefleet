@@ -1,5 +1,6 @@
 import logging
 import os
+import time as _time
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -7,6 +8,156 @@ from mcp.server.fastmcp import FastMCP
 from .supervisor import FleetSupervisor
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Response formatting helpers
+# ---------------------------------------------------------------------------
+
+_STATUS_LABELS = {
+    "pending": "PENDING",
+    "running": "RUNNING",
+    "succeeded": "OK",
+    "failed": "FAILED",
+    "cancelled": "CANCELLED",
+    "timed_out": "TIMED OUT",
+    "cleanup_failed": "CLEANUP FAILED",
+}
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    """Format seconds as human-readable duration."""
+    if seconds is None or seconds < 0:
+        return "-"
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+def _worker_elapsed(d: dict) -> float | None:
+    started = d.get("started_at")
+    ended = d.get("ended_at")
+    if started and ended:
+        return ended - started
+    if started:
+        return _time.time() - started
+    return None
+
+
+def _enrich_worker(d: dict) -> dict:
+    """Add human-readable display fields to a worker status dict."""
+    status = d.get("status", "")
+    elapsed = _worker_elapsed(d)
+    d["elapsed"] = _fmt_duration(elapsed)
+    d["status_label"] = f"[{_STATUS_LABELS.get(status, status.upper())}]"
+    task = d.get("task_name", "")
+    executor = d.get("executor", "")
+    model = d.get("model", "")
+    d["summary_line"] = (
+        f"{d['status_label']} {task} ({executor}/{model}) — {d['elapsed']}"
+    )
+    return d
+
+
+def _enrich_workflow(d: dict, supervisor: FleetSupervisor) -> dict:
+    """Add progress display fields to a workflow status dict."""
+    stages = d.get("stage_summary", [])
+    created = d.get("created_at")
+    completed = d.get("completed_at")
+
+    if created and completed:
+        total = completed - created
+    elif created:
+        total = _time.time() - created
+    else:
+        total = None
+    d["elapsed"] = _fmt_duration(total)
+
+    # Look up worker records for per-stage timing
+    worker_ids = [s["worker_id"] for s in stages if s.get("worker_id")]
+    workers = {}
+    if worker_ids:
+        for rec in supervisor.store.get_workers(worker_ids):
+            workers[rec.worker_id] = rec
+
+    for s in stages:
+        st = s.get("status", "pending")
+        s["status_label"] = f"[{_STATUS_LABELS.get(st, st.upper())}]"
+        wid = s.get("worker_id")
+        if wid and wid in workers:
+            rec = workers[wid]
+            if rec.started_at and rec.ended_at:
+                s["elapsed"] = _fmt_duration(rec.ended_at - rec.started_at)
+            elif rec.started_at:
+                s["elapsed"] = _fmt_duration(_time.time() - rec.started_at)
+            else:
+                s["elapsed"] = "-"
+            s["model"] = rec.model
+        else:
+            s["elapsed"] = "-"
+
+    # Progress summary
+    counts: dict[str, int] = {}
+    for s in stages:
+        st = s.get("status", "pending")
+        counts[st] = counts.get(st, 0) + 1
+
+    n = len(stages)
+    ok = counts.get("succeeded", 0)
+    running = counts.get("running", 0)
+    pending = counts.get("pending", 0)
+    failed_n = sum(
+        counts.get(k, 0) for k in ("failed", "timed_out", "cancelled", "cleanup_failed")
+    )
+
+    parts = []
+    if ok:
+        parts.append(f"{ok} done")
+    if running:
+        parts.append(f"{running} running")
+    if pending:
+        parts.append(f"{pending} pending")
+    if failed_n:
+        parts.append(f"{failed_n} failed")
+
+    detail = f" ({', '.join(parts)})" if parts else ""
+    d["progress"] = f"{ok}/{n} stages complete{detail}"
+
+    status = d.get("status", "")
+    name = d.get("name", "")
+    label = _STATUS_LABELS.get(status, status.upper())
+    d["summary_line"] = f"[{label}] {name} — {d['progress']} ({d['elapsed']})"
+
+    # Enrich nested stage results / final result if present
+    if "stage_results" in d:
+        for sr in d["stage_results"]:
+            if sr.get("result"):
+                _enrich_worker(sr["result"])
+    if d.get("final_result"):
+        _enrich_worker(d["final_result"])
+
+    return d
+
+
+def _list_summary(items: list[dict], kind: str) -> str:
+    """Build a summary line like '5 workers: 2 running, 2 ok, 1 failed'."""
+    counts: dict[str, int] = {}
+    for item in items:
+        st = item.get("status", "pending")
+        counts[st] = counts.get(st, 0) + 1
+    order = ("running", "succeeded", "failed", "pending", "cancelled", "timed_out", "cleanup_failed")
+    parts = []
+    for st in order:
+        c = counts.get(st, 0)
+        if c:
+            parts.append(f"{c} {_STATUS_LABELS.get(st, st).lower()}")
+    detail = f": {', '.join(parts)}" if parts else ""
+    return f"{len(items)} {kind}{detail}"
 
 
 def _default_supervisor() -> FleetSupervisor:
@@ -30,6 +181,9 @@ def _default_supervisor() -> FleetSupervisor:
         allowed_repos=allowed_repos or None,
         default_executor=os.environ.get("FLEET_DEFAULT_EXECUTOR", "codex"),
         max_spawn_depth=int(os.environ.get("FLEET_MAX_SPAWN_DEPTH", "2")),
+        rate_limit_max_retries=int(os.environ.get("FLEET_RATE_LIMIT_MAX_RETRIES", "3")),
+        rate_limit_base_delay=float(os.environ.get("FLEET_RATE_LIMIT_BASE_DELAY", "4.0")),
+        rate_limit_max_delay=float(os.environ.get("FLEET_RATE_LIMIT_MAX_DELAY", "60.0")),
     )
 
 
@@ -170,7 +324,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 extra_codex_args=extra_codex_args,
                 parent_worker_id=parent_worker_id,
             )
-            return _dump(result)
+            return _enrich_worker(_dump(result))
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -179,7 +333,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """Return current status and metadata for a worker."""
         try:
             result = supervisor.get_worker_status(worker_id)
-            return _dump(result)
+            return _enrich_worker(_dump(result))
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -191,7 +345,12 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """List recent workers, optionally filtered by status."""
         try:
             results = supervisor.list_workers(statuses=statuses, limit=limit)
-            return {"workers": [_dump(r) for r in results], "count": len(results)}
+            workers = [_enrich_worker(_dump(r)) for r in results]
+            return {
+                "workers": workers,
+                "count": len(workers),
+                "summary": _list_summary(workers, "workers"),
+            }
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -203,11 +362,12 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Return worker metadata plus parsed result.json and optional log tails."""
         try:
-            return supervisor.collect_worker_result(
+            result = supervisor.collect_worker_result(
                 worker_id=worker_id,
                 include_logs=include_logs,
                 log_tail_lines=log_tail_lines,
             )
+            return _enrich_worker(result)
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -216,7 +376,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """Cancel a running worker."""
         try:
             result = supervisor.cancel_worker(worker_id)
-            return _dump(result)
+            return _enrich_worker(_dump(result))
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -269,7 +429,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 base_ref=base_ref,
                 timeout_seconds=timeout_seconds,
             )
-            return _dump(result)
+            return _enrich_workflow(_dump(result), supervisor)
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -278,7 +438,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """Return workflow state with per-stage worker statuses."""
         try:
             result = supervisor.get_workflow_status(workflow_id)
-            return _dump(result)
+            return _enrich_workflow(_dump(result), supervisor)
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -290,7 +450,12 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """List workflows with optional status filter."""
         try:
             results = supervisor.list_workflows(statuses=statuses, limit=limit)
-            return {"workflows": [_dump(r) for r in results], "count": len(results)}
+            workflows = [_enrich_workflow(_dump(r), supervisor) for r in results]
+            return {
+                "workflows": workflows,
+                "count": len(workflows),
+                "summary": _list_summary(workflows, "workflows"),
+            }
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -299,7 +464,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         """Cancel all running stages and mark workflow cancelled."""
         try:
             result = supervisor.cancel_workflow(workflow_id)
-            return _dump(result)
+            return _enrich_workflow(_dump(result), supervisor)
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 
@@ -311,11 +476,12 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Get the final stage's result (or all stages' results)."""
         try:
-            return supervisor.collect_workflow_result(
+            result = supervisor.collect_workflow_result(
                 workflow_id=workflow_id,
                 include_all_stages=include_all_stages,
                 include_logs=include_logs,
             )
+            return _enrich_workflow(result, supervisor)
         except (ValueError, RuntimeError, FileNotFoundError, Exception) as exc:
             return _error_response(exc)
 

@@ -20,7 +20,7 @@ Claude Code  ──>  codefleet  ──>  Codex worker   (implement)
 ```
 
 <p align="center">
-  <img src="demo/demo.gif" alt="codefleet demo" width="700">
+  <img src="demo/demo.gif" alt="codefleet demo" width="800">
 </p>
 
 ## Why
@@ -222,6 +222,9 @@ Available in stage `prompt_template` strings:
 | `FLEET_MAX_SPAWN_DEPTH` | `2` | How deep agents can recursively spawn sub-agents |
 | `FLEET_ALLOWED_REPOS` | *(all)* | Comma-separated allowlist of repo paths |
 | `FLEET_BASE_DIR` | `~/.codex-fleet` | Data directory for workers and DB |
+| `FLEET_RATE_LIMIT_MAX_RETRIES` | `3` | Auto-retries on 429 rate-limit errors |
+| `FLEET_RATE_LIMIT_BASE_DELAY` | `4.0` | Initial backoff delay in seconds (doubles each retry) |
+| `FLEET_RATE_LIMIT_MAX_DELAY` | `60.0` | Maximum backoff delay cap in seconds |
 
 ## How It Works
 
@@ -249,10 +252,10 @@ brew install asciinema
 cargo install --git https://github.com/asciinema/agg
 
 # Record
-asciinema rec demo/demo.cast -c "python demo/demo.py"
+asciinema rec demo/demo.cast -c "python demo/demo.py" --cols 100 --rows 32
 
 # Convert to GIF
-agg demo/demo.cast demo/demo.gif --cols 80 --rows 24
+agg demo/demo.cast demo/demo.gif --cols 100 --rows 32
 ```
 
 ## License
