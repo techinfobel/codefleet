@@ -9,17 +9,14 @@ from typing import Optional, Callable
 
 
 def get_codex_path() -> str | None:
-    """Return the path to codex, or None."""
     return shutil.which("codex")
 
 
 def get_gemini_path() -> str | None:
-    """Return the path to gemini, or None."""
     return shutil.which("gemini")
 
 
 def get_claude_path() -> str | None:
-    """Return the path to claude, or None."""
     return shutil.which("claude")
 
 
@@ -71,7 +68,7 @@ def build_gemini_command(
     cmd = [
         "gemini", "-p", instruction,
         "--approval-mode", "yolo",
-        "--sandbox", "false",     # Disable sandbox so the agent can write files
+        "--sandbox", "false",
         "--output-format", "json",
     ]
     if model:
@@ -126,7 +123,7 @@ def build_worker_command(
             prompt_path=prompt_path,
             result_json_path=result_json_path,
             model=model,
-            effort=reasoning_effort or "high",
+            effort=reasoning_effort or "max",
             extra_args=extra_args,
         )
     # Default: codex
@@ -140,7 +137,7 @@ def build_worker_command(
 
 
 class WorkerProcess:
-    """Manages a single codex worker subprocess."""
+    """Manages a single worker subprocess."""
 
     def __init__(
         self,
@@ -171,16 +168,19 @@ class WorkerProcess:
         stdout_f = open(self.stdout_path, "w")
         stderr_f = open(self.stderr_path, "w")
 
-        self._process = subprocess.Popen(
-            self.command,
-            cwd=str(self.cwd),
-            stdout=stdout_f,
-            stderr=stderr_f,
-            start_new_session=True,
-            env={**os.environ},
-        )
+        try:
+            self._process = subprocess.Popen(
+                self.command,
+                cwd=str(self.cwd),
+                stdout=stdout_f,
+                stderr=stderr_f,
+                start_new_session=True,
+            )
+        except Exception:
+            stdout_f.close()
+            stderr_f.close()
+            raise
 
-        # Start monitor thread
         self._monitor_thread = threading.Thread(
             target=self._monitor,
             args=(stdout_f, stderr_f),
@@ -192,36 +192,26 @@ class WorkerProcess:
 
     def _monitor(self, stdout_f, stderr_f):
         """Monitor the process for completion or timeout."""
+        exit_code = -1
+        error = None
         try:
             start_time = time.monotonic()
             while True:
                 try:
                     exit_code = self._process.wait(timeout=1.0)
-                    # Process completed
-                    stdout_f.close()
-                    stderr_f.close()
-                    if self.on_complete:
-                        self.on_complete(self.worker_id, exit_code, None)
                     return
                 except subprocess.TimeoutExpired:
-                    elapsed = time.monotonic() - start_time
-                    if elapsed >= self.timeout_seconds:
+                    if time.monotonic() - start_time >= self.timeout_seconds:
                         self._terminate()
-                        stdout_f.close()
-                        stderr_f.close()
-                        if self.on_complete:
-                            self.on_complete(
-                                self.worker_id, -1, "Worker timed out"
-                            )
+                        error = "Worker timed out"
                         return
         except Exception as e:
-            try:
-                stdout_f.close()
-                stderr_f.close()
-            except Exception:
-                pass
+            error = f"Monitor error: {e}"
+        finally:
+            stdout_f.close()
+            stderr_f.close()
             if self.on_complete:
-                self.on_complete(self.worker_id, -1, f"Monitor error: {e}")
+                self.on_complete(self.worker_id, exit_code, error)
 
     def _terminate(self):
         """Terminate the process group."""
@@ -243,6 +233,4 @@ class WorkerProcess:
         self._terminate()
 
     def is_running(self) -> bool:
-        if self._process is None:
-            return False
-        return self._process.poll() is None
+        return self._process is not None and self._process.poll() is None

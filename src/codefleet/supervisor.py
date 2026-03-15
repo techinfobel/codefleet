@@ -1,8 +1,10 @@
 import json
+import logging
 import re
 import shutil
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -24,14 +26,22 @@ from .worker_runtime import (
     get_claude_path,
 )
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_CLAUDE_MODEL = "claude-opus-4-6"
-DEFAULT_REASONING_EFFORT = "xhigh"
+DEFAULT_REASONING_EFFORT = "max"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
 MAX_CONCURRENT_WORKERS = 50
 DEFAULT_MAX_SPAWN_DEPTH = 2
+
+_EXECUTOR_REASONING_DEFAULTS = {
+    ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
+    ExecutorType.GEMINI: None,         # Gemini CLI has no effort flag
+    ExecutorType.CLAUDE: "max",        # Claude: low, medium, high, max
+}
 
 
 def _sanitize_task_name(name: str) -> str:
@@ -79,10 +89,7 @@ class FleetSupervisor:
         self.default_executor = ExecutorType(default_executor)
         self.max_spawn_depth = max_spawn_depth
 
-        # In-memory map of active workers
         self._active_workers: dict[str, WorkerProcess] = {}
-
-        # Lazy-init workflow engine
         self._workflow_engine = None
 
     @property
@@ -102,21 +109,19 @@ class FleetSupervisor:
         )
 
     def healthcheck(self) -> dict:
-        codex_path = get_codex_path()
-        gemini_path = get_gemini_path()
-        claude_path = get_claude_path()
+        executor_paths = {
+            "codex": get_codex_path(),
+            "gemini": get_gemini_path(),
+            "claude": get_claude_path(),
+        }
         git_path = get_git_path()
         return {
-            "ok": bool((codex_path or gemini_path or claude_path) and git_path),
+            "ok": bool(any(executor_paths.values()) and git_path),
             "app": "codefleet",
             "db_path": str(self.db_path),
             "base_dir": str(self.base_dir),
-            "codex_found": codex_path is not None,
-            "codex_path": codex_path or "",
-            "gemini_found": gemini_path is not None,
-            "gemini_path": gemini_path or "",
-            "claude_found": claude_path is not None,
-            "claude_path": claude_path or "",
+            **{f"{name}_found": path is not None for name, path in executor_paths.items()},
+            **{f"{name}_path": path or "" for name, path in executor_paths.items()},
             "git_found": git_path is not None,
             "git_path": git_path or "",
             "default_model": self.default_model,
@@ -149,7 +154,6 @@ class FleetSupervisor:
     ) -> WorkerStatusPayload:
         repo = Path(repo_path).resolve()
 
-        # Validations
         if not repo.exists():
             raise ValueError(f"Repo path does not exist: {repo}")
         if not is_git_repo(repo):
@@ -157,7 +161,6 @@ class FleetSupervisor:
         if not self._is_repo_allowed(repo):
             raise ValueError(f"Repo not in allowlist: {repo}")
 
-        # Check concurrency
         running = self.store.list_workers(
             statuses=["running"], limit=self.max_concurrent + 1
         )
@@ -166,10 +169,6 @@ class FleetSupervisor:
                 f"Concurrency limit reached ({self.max_concurrent} workers running)"
             )
 
-        # Enforce spawn depth limit.
-        # depth=1 means parent is a root worker. max_spawn_depth=1 allows
-        # root workers to spawn one level of children (depth 1 can spawn,
-        # depth 2+ cannot).
         if parent_worker_id:
             depth = self._compute_spawn_depth(parent_worker_id)
             if depth > self.max_spawn_depth:
@@ -178,26 +177,23 @@ class FleetSupervisor:
                     f"Worker {parent_worker_id} is at depth {depth}."
                 )
 
-        # Resolve executor
         executor_type = ExecutorType(executor) if executor else self.default_executor
 
-        # Resolve model default based on executor
         if model is None:
-            if executor_type == ExecutorType.GEMINI:
-                model = self.default_gemini_model
-            elif executor_type == ExecutorType.CLAUDE:
-                model = self.default_claude_model
-            else:
-                model = self.default_model
+            model = {
+                ExecutorType.CODEX: self.default_model,
+                ExecutorType.GEMINI: self.default_gemini_model,
+                ExecutorType.CLAUDE: self.default_claude_model,
+            }[executor_type]
 
-        # Resolve other defaults
-        reasoning_effort = reasoning_effort or self.default_reasoning_effort
+        if reasoning_effort is None:
+            reasoning_effort = _EXECUTOR_REASONING_DEFAULTS.get(
+                executor_type, self.default_reasoning_effort
+            )
+
         timeout_seconds = timeout_seconds or self.default_timeout
-
-        # Merge extra_args (extra_codex_args is deprecated alias)
         merged_extra_args = extra_args or extra_codex_args
 
-        # Generate IDs and paths
         worker_id = _generate_worker_id()
         sanitized = _sanitize_task_name(task_name)
         branch_name = f"{executor_type.value}/{sanitized}/{worker_id}"
@@ -211,10 +207,8 @@ class FleetSupervisor:
         stderr_path = worker_dir / "stderr.log"
         meta_path = worker_dir / "meta.json"
 
-        # Write prompt
         prompt_path.write_text(prompt, encoding="utf-8")
 
-        # Write metadata
         meta = {
             "worker_id": worker_id,
             "task_name": task_name,
@@ -231,7 +225,6 @@ class FleetSupervisor:
         }
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-        # Handle worktree: use existing or create new
         if existing_worktree_path and existing_branch_name:
             worktree_path = Path(existing_worktree_path)
             branch_name = existing_branch_name
@@ -239,7 +232,6 @@ class FleetSupervisor:
             worktree_path = worker_dir / "worktree"
             create_worktree(repo, worktree_path, branch_name, base_ref)
 
-        # Build command
         cmd = build_worker_command(
             executor=executor_type.value,
             prompt_path=prompt_path,
@@ -251,7 +243,6 @@ class FleetSupervisor:
 
         now = time.time()
 
-        # Create record
         record = WorkerRecord(
             worker_id=worker_id,
             task_name=task_name,
@@ -282,7 +273,6 @@ class FleetSupervisor:
 
         self.store.insert_worker(record)
 
-        # Launch worker
         worker_proc = WorkerProcess(
             worker_id=worker_id,
             command=cmd,
@@ -303,7 +293,6 @@ class FleetSupervisor:
             pid=pid,
         )
 
-        # Refresh record
         record = self.store.get_worker(worker_id)
         return WorkerStatusPayload.from_record(record)
 
@@ -328,56 +317,36 @@ class FleetSupervisor:
             return
 
         now = time.time()
+        update = {"ended_at": now, "exit_code": exit_code}
 
         if error and "timed out" in error.lower():
-            self.store.update_worker(
-                worker_id,
-                status=WorkerStatus.TIMED_OUT,
-                ended_at=now,
-                exit_code=exit_code,
-                error_message=error,
-            )
+            update["status"] = WorkerStatus.TIMED_OUT
+            update["error_message"] = error
         elif exit_code != 0:
-            self.store.update_worker(
-                worker_id,
-                status=WorkerStatus.FAILED,
-                ended_at=now,
-                exit_code=exit_code,
-                error_message=error or f"Process exited with code {exit_code}",
-            )
+            update["status"] = WorkerStatus.FAILED
+            update["error_message"] = error or f"Process exited with code {exit_code}"
         else:
-            # Check if result.json exists and validates
             result_path = Path(record.result_json_path)
             try:
                 parse_result_file(result_path)
-                self.store.update_worker(
-                    worker_id,
-                    status=WorkerStatus.SUCCEEDED,
-                    ended_at=now,
-                    exit_code=0,
-                )
             except ResultValidationError as e:
-                self.store.update_worker(
-                    worker_id,
-                    status=WorkerStatus.FAILED,
-                    ended_at=now,
-                    exit_code=0,
-                    error_message=f"Result validation failed: {e}",
-                )
+                update["status"] = WorkerStatus.FAILED
+                update["error_message"] = f"Result validation failed: {e}"
+            else:
+                update["status"] = WorkerStatus.SUCCEEDED
 
-        # Remove from active workers
+        self.store.update_worker(worker_id, **update)
+
         self._active_workers.pop(worker_id, None)
 
-        # If this worker is part of a workflow, notify the workflow engine
         record = self.store.get_worker(worker_id)
         if record and record.workflow_id is not None and record.stage_index is not None:
             try:
                 self.workflow_engine.on_stage_complete(
                     worker_id, record.workflow_id, record.stage_index
                 )
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()  # Log for debugging, but don't crash
+            except Exception:
+                logger.exception("Error in workflow stage completion callback")
 
     def get_worker_status(self, worker_id: str) -> WorkerStatusPayload:
         record = self.store.get_worker(worker_id)
@@ -405,7 +374,6 @@ class FleetSupervisor:
 
         payload = WorkerStatusPayload.from_record(record).model_dump()
 
-        # Parse result.json if present
         result_path = Path(record.result_json_path)
         if result_path.exists():
             try:
@@ -417,7 +385,6 @@ class FleetSupervisor:
         else:
             payload["result"] = None
 
-        # Include log tails if requested
         if include_logs:
             payload["stdout_tail"] = self._tail_file(
                 Path(record.stdout_path), log_tail_lines
@@ -438,11 +405,9 @@ class FleetSupervisor:
                 f"Worker {worker_id} is already terminal ({record.status.value})"
             )
 
-        # Cancel the process
-        proc = self._active_workers.get(worker_id)
+        proc = self._active_workers.pop(worker_id, None)
         if proc:
             proc.cancel()
-            self._active_workers.pop(worker_id, None)
 
         self.store.update_worker(
             worker_id,
@@ -482,7 +447,6 @@ class FleetSupervisor:
         repo_path = Path(record.repo_path)
         worktree_path = Path(record.worktree_path)
 
-        # Remove worktree
         try:
             if worktree_path.exists():
                 remove_worktree(repo_path, worktree_path)
@@ -490,7 +454,6 @@ class FleetSupervisor:
         except Exception as e:
             cleanup_summary["errors"].append(f"Worktree removal: {e}")
 
-        # Remove branch
         if remove_branch:
             try:
                 delete_branch(repo_path, record.branch_name)
@@ -498,7 +461,6 @@ class FleetSupervisor:
             except Exception as e:
                 cleanup_summary["errors"].append(f"Branch deletion: {e}")
 
-        # Remove worker directory
         if remove_worktree_dir:
             try:
                 worker_dir = Path(record.worker_dir)
@@ -508,7 +470,6 @@ class FleetSupervisor:
             except Exception as e:
                 cleanup_summary["errors"].append(f"Worker dir removal: {e}")
 
-        # Update status if there were errors
         if cleanup_summary["errors"]:
             self.store.update_worker(
                 worker_id,
@@ -543,10 +504,9 @@ class FleetSupervisor:
         if not path.exists():
             return ""
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")
-            all_lines = content.splitlines()
-            tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
-            return "\n".join(tail)
+            with path.open("r", encoding="utf-8", errors="replace") as f:
+                tail = deque(f, maxlen=lines)
+            return "".join(tail).rstrip("\n")
         except Exception:
             return ""
 

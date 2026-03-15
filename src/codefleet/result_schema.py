@@ -8,6 +8,15 @@ class ResultValidationError(Exception):
     pass
 
 
+def _validate_result(data: object) -> WorkerResult:
+    if not isinstance(data, dict):
+        raise ResultValidationError("Result JSON must be an object")
+    try:
+        return WorkerResult.model_validate(data)
+    except Exception as e:
+        raise ResultValidationError(f"Result schema validation failed: {e}")
+
+
 def parse_result_file(path: Path) -> WorkerResult:
     """Parse and validate a result.json file."""
     if not path.exists():
@@ -22,18 +31,9 @@ def parse_result_file(path: Path) -> WorkerResult:
     except json.JSONDecodeError as e:
         raise ResultValidationError(f"Invalid JSON in result file: {e}")
 
-    if not isinstance(data, dict):
-        raise ResultValidationError("Result JSON must be an object")
-
-    try:
-        return WorkerResult.model_validate(data)
-    except Exception as e:
-        raise ResultValidationError(f"Result schema validation failed: {e}")
+    return _validate_result(data)
 
 
 def validate_result_data(data: dict) -> WorkerResult:
     """Validate a result dict against the schema."""
-    try:
-        return WorkerResult.model_validate(data)
-    except Exception as e:
-        raise ResultValidationError(f"Result schema validation failed: {e}")
+    return _validate_result(data)

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
 import uuid
+from collections import deque
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from .models import (
-    ExecutorType,
     StageDefinition,
     StageState,
     WorkerStatus,
@@ -17,7 +17,6 @@ from .models import (
     WorktreeStrategy,
 )
 from .result_schema import parse_result_file
-from pathlib import Path
 
 if TYPE_CHECKING:
     from .supervisor import FleetSupervisor
@@ -33,7 +32,7 @@ class _SafeDict(dict):
 class WorkflowEngine:
     def __init__(self, supervisor: FleetSupervisor):
         self.supervisor = supervisor
-        self._lock = threading.RLock()  # Serializes stage state updates (reentrant for nested calls)
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,7 +57,6 @@ class WorkflowEngine:
             i: StageState() for i in range(len(stage_defs))
         }
 
-        # Apply default timeout to stages that don't have one
         if timeout_seconds is not None:
             for sd in stage_defs:
                 if sd.timeout_seconds is None:
@@ -78,7 +76,6 @@ class WorkflowEngine:
 
         self.supervisor.store.insert_workflow(record)
 
-        # Start root stages under lock to prevent race with fast-completing workers
         root_indices = [i for i, s in enumerate(stage_defs) if not s.depends_on]
         with self._lock:
             for idx in root_indices:
@@ -87,8 +84,8 @@ class WorkflowEngine:
             self.supervisor.store.update_workflow(
                 workflow_id, status=WorkflowStatus.RUNNING
             )
+            record.status = WorkflowStatus.RUNNING
 
-        record = self.supervisor.store.get_workflow(workflow_id)
         return WorkflowStatusPayload.from_record(record)
 
     def get_workflow_status(self, workflow_id: str) -> WorkflowStatusPayload:
@@ -112,7 +109,6 @@ class WorkflowEngine:
         if record.status in {WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}:
             raise ValueError(f"Workflow {workflow_id} is already terminal ({record.status.value})")
 
-        # Cancel all running stages
         for idx, state in record.stage_states.items():
             if not state.status.is_terminal and state.worker_id:
                 try:
@@ -129,7 +125,9 @@ class WorkflowEngine:
             error_message="Cancelled by user",
         )
 
-        record = self.supervisor.store.get_workflow(workflow_id)
+        record.status = WorkflowStatus.CANCELLED
+        record.completed_at = time.time()
+        record.error_message = "Cancelled by user"
         return WorkflowStatusPayload.from_record(record)
 
     def collect_workflow_result(
@@ -150,27 +148,17 @@ class WorkflowEngine:
                 state = record.stage_states.get(i, StageState())
                 stage_data = {"index": i, "name": stage.name, "status": state.status.value}
                 if state.worker_id:
-                    try:
-                        stage_data["result"] = self.supervisor.collect_worker_result(
-                            state.worker_id, include_logs=include_logs
-                        )
-                    except ValueError:
-                        stage_data["result"] = None
+                    stage_data["result"] = self._collect_worker_result(
+                        state.worker_id, include_logs
+                    )
                 stage_results.append(stage_data)
             payload["stage_results"] = stage_results
         else:
-            # Return the last stage's result
             last_idx = len(record.stages) - 1
             last_state = record.stage_states.get(last_idx, StageState())
-            if last_state.worker_id:
-                try:
-                    payload["final_result"] = self.supervisor.collect_worker_result(
-                        last_state.worker_id, include_logs=include_logs
-                    )
-                except ValueError:
-                    payload["final_result"] = None
-            else:
-                payload["final_result"] = None
+            payload["final_result"] = self._collect_worker_result(
+                last_state.worker_id, include_logs
+            )
 
         return payload
 
@@ -190,19 +178,10 @@ class WorkflowEngine:
             "errors": [],
         }
 
-        # Track which worktree paths are owned by NEW stages
-        new_worktree_owners: set[str] = set()
-        for i, stage in enumerate(record.stages):
-            if stage.worktree_strategy == WorktreeStrategy.NEW:
-                state = record.stage_states.get(i, StageState())
-                if state.worktree_path:
-                    new_worktree_owners.add(state.worktree_path)
-
         for i, state in record.stage_states.items():
             if state.worker_id:
                 try:
                     stage_def = record.stages[i]
-                    # Only remove worktree/branch for NEW stages
                     remove_branch = stage_def.worktree_strategy == WorktreeStrategy.NEW
                     self.supervisor.cleanup_worker(
                         state.worker_id,
@@ -214,6 +193,18 @@ class WorkflowEngine:
                     cleanup_summary["errors"].append(f"Stage {i}: {e}")
 
         return cleanup_summary
+
+    def _collect_worker_result(
+        self, worker_id: Optional[str], include_logs: bool
+    ) -> Optional[dict]:
+        if not worker_id:
+            return None
+        try:
+            return self.supervisor.collect_worker_result(
+                worker_id, include_logs=include_logs
+            )
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------
     # Callback from supervisor when a workflow worker completes
@@ -236,9 +227,7 @@ class WorkflowEngine:
         state.status = worker_record.status
         record.stage_states[stage_index] = state
 
-        # If the stage failed, mark workflow failed and cancel running stages
         if worker_record.status in {WorkerStatus.FAILED, WorkerStatus.TIMED_OUT, WorkerStatus.CANCELLED}:
-            # Cancel any other running stages
             for idx, s in record.stage_states.items():
                 if idx != stage_index and not s.status.is_terminal and s.worker_id:
                     try:
@@ -257,24 +246,17 @@ class WorkflowEngine:
             )
             return
 
-        # Stage succeeded — find downstream stages ready to run
         self.supervisor.store.update_workflow(
             workflow_id, stage_states=record.stage_states
         )
 
-        # Check which downstream stages have all dependencies satisfied
         for i, stage_def in enumerate(record.stages):
-            if i in record.stage_states:
-                s = record.stage_states[i]
-                if s.status != WorkerStatus.PENDING:
-                    continue
-            else:
+            state = record.stage_states.get(i)
+            if state is None or state.status != WorkerStatus.PENDING:
                 continue
-
             if stage_index not in stage_def.depends_on:
                 continue
 
-            # Check if ALL dependencies are satisfied
             all_deps_done = all(
                 record.stage_states.get(dep, StageState()).status == WorkerStatus.SUCCEEDED
                 for dep in stage_def.depends_on
@@ -282,18 +264,17 @@ class WorkflowEngine:
             if all_deps_done:
                 self._start_stage(workflow_id, i)
 
-        # Check if all stages are complete
         record = self.supervisor.store.get_workflow(workflow_id)
-        all_done = all(
-            record.stage_states.get(i, StageState()).status.is_terminal
+        statuses = [
+            record.stage_states.get(i, StageState()).status
             for i in range(len(record.stages))
-        )
-        all_succeeded = all(
-            record.stage_states.get(i, StageState()).status == WorkerStatus.SUCCEEDED
-            for i in range(len(record.stages))
-        )
-        if all_done:
-            final_status = WorkflowStatus.SUCCEEDED if all_succeeded else WorkflowStatus.FAILED
+        ]
+        if all(s.is_terminal for s in statuses):
+            final_status = (
+                WorkflowStatus.SUCCEEDED
+                if all(s == WorkerStatus.SUCCEEDED for s in statuses)
+                else WorkflowStatus.FAILED
+            )
             self.supervisor.store.update_workflow(
                 workflow_id,
                 status=final_status,
@@ -305,22 +286,16 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def _start_stage(self, workflow_id: str, stage_index: int) -> str:
-        # Lock protects read-modify-write on stage_states (RLock allows nested calls)
-        with self._lock:
-            return self._start_stage_locked(workflow_id, stage_index)
-
-    def _start_stage_locked(self, workflow_id: str, stage_index: int) -> str:
         record = self.supervisor.store.get_workflow(workflow_id)
+        if record is None:
+            raise ValueError(f"Workflow not found: {workflow_id}")
         stage_def = record.stages[stage_index]
 
-        # Render prompt
         rendered_prompt = self._render_prompt(record, stage_index)
 
-        # Determine worktree handling
         existing_worktree_path = None
         existing_branch_name = None
         if stage_def.worktree_strategy == WorktreeStrategy.INHERIT and stage_def.depends_on:
-            # Use the first dependency's worktree
             first_dep = stage_def.depends_on[0]
             dep_state = record.stage_states.get(first_dep, StageState())
             if dep_state.worker_id:
@@ -329,15 +304,12 @@ class WorkflowEngine:
                     existing_worktree_path = dep_worker.worktree_path
                     existing_branch_name = dep_worker.branch_name
 
-        # Determine model
-        model = stage_def.model  # None means supervisor picks executor default
-
         payload = self.supervisor.create_worker(
             repo_path=record.repo_path,
             task_name=f"{record.name}/{stage_def.name}",
             prompt=rendered_prompt,
             base_ref=record.base_ref,
-            model=model,
+            model=stage_def.model,
             executor=stage_def.executor.value,
             reasoning_effort=stage_def.reasoning_effort,
             timeout_seconds=stage_def.timeout_seconds,
@@ -348,7 +320,6 @@ class WorkflowEngine:
             existing_branch_name=existing_branch_name,
         )
 
-        # Update stage state
         state = record.stage_states.get(stage_index, StageState())
         state.worker_id = payload.worker_id
         state.status = WorkerStatus.RUNNING
@@ -364,12 +335,21 @@ class WorkflowEngine:
         template = workflow.stages[stage_index].prompt_template
         variables = _SafeDict(task_prompt=workflow.task_prompt)
 
+        worker_ids = [
+            workflow.stage_states[i].worker_id
+            for i in range(len(workflow.stages))
+            if workflow.stage_states.get(i, StageState()).status == WorkerStatus.SUCCEEDED
+            and workflow.stage_states.get(i, StageState()).worker_id
+        ]
+
+        workers = {w.worker_id: w for w in self.supervisor.store.get_workers(worker_ids)} if worker_ids else {}
+
         for i, stage_def in enumerate(workflow.stages):
             state = workflow.stage_states.get(i, StageState())
             if state.status != WorkerStatus.SUCCEEDED or not state.worker_id:
                 continue
 
-            worker = self.supervisor.store.get_worker(state.worker_id)
+            worker = workers.get(state.worker_id)
             if worker is None:
                 continue
 
@@ -379,11 +359,13 @@ class WorkflowEngine:
 
             try:
                 result = parse_result_file(result_path)
-                variables[f"stage_{i}_summary"] = result.summary
-                variables[f"stage_{i}_files"] = ", ".join(result.files_changed)
-                variables[f"stage_{i}_result"] = result_path.read_text(encoding="utf-8")
-                variables[f"stage_{i}_next_steps"] = "\n".join(result.next_steps)
-                variables[f"stage_{i}_status"] = result.status.value
+                variables.update({
+                    f"stage_{i}_summary": result.summary,
+                    f"stage_{i}_files": ", ".join(result.files_changed),
+                    f"stage_{i}_result": result_path.read_text(encoding="utf-8"),
+                    f"stage_{i}_next_steps": "\n".join(result.next_steps),
+                    f"stage_{i}_status": result.status.value,
+                })
             except Exception:
                 pass
 
@@ -406,7 +388,6 @@ class WorkflowEngine:
                         f"Stage {i} ({stage.name}) cannot depend on itself"
                     )
 
-        # Cycle detection via topological sort (Kahn's algorithm)
         in_degree = [0] * n
         adj: dict[int, list[int]] = {i: [] for i in range(n)}
         for i, stage in enumerate(stages):
@@ -414,13 +395,13 @@ class WorkflowEngine:
                 adj[dep].append(i)
                 in_degree[i] += 1
 
-        queue = [i for i in range(n) if in_degree[i] == 0]
+        queue = deque(i for i in range(n) if in_degree[i] == 0)
         if not queue:
             raise ValueError("Workflow DAG has no root stages (cycle detected)")
 
         visited = 0
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             visited += 1
             for neighbor in adj[node]:
                 in_degree[neighbor] -= 1
@@ -430,7 +411,6 @@ class WorkflowEngine:
         if visited != n:
             raise ValueError("Workflow DAG contains a cycle")
 
-        # Validate that INHERIT stages have dependencies
         for i, stage in enumerate(stages):
             if stage.worktree_strategy == WorktreeStrategy.INHERIT and not stage.depends_on:
                 raise ValueError(

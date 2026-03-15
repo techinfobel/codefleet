@@ -10,3 +10,4 @@ build/
 *.db
 demo/*.cast
 demo/*.svg
+.env

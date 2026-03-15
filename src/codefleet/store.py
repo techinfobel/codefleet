@@ -1,3 +1,4 @@
+import enum
 import json
 import sqlite3
 import threading
@@ -95,6 +96,10 @@ INSERT INTO workflows (
 """
 
 
+def _dump_model(value):
+    return value.model_dump() if hasattr(value, "model_dump") else value
+
+
 class WorkerStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
@@ -116,7 +121,6 @@ class WorkerStore:
         conn.execute(_CREATE_WORKFLOWS_TABLE)
         for idx in _CREATE_INDEXES:
             conn.execute(idx)
-        # Run idempotent migrations
         for migration in _MIGRATIONS:
             try:
                 conn.execute(migration)
@@ -174,23 +178,29 @@ class WorkerStore:
             return None
         return self._row_to_record(row)
 
-    def update_worker(self, worker_id: str, **kwargs) -> None:
+    def get_workers(self, worker_ids: list[str]) -> list[WorkerRecord]:
+        if not worker_ids:
+            return []
         conn = self._get_conn()
-        column_map = {
-            "tags": "tags_json",
-            "metadata": "metadata_json",
-        }
+        placeholders = ", ".join("?" for _ in worker_ids)
+        rows = conn.execute(
+            f"SELECT * FROM workers WHERE worker_id IN ({placeholders})",
+            tuple(worker_ids)
+        ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def update_worker(self, worker_id: str, **kwargs) -> None:
+        if not kwargs:
+            return
+        conn = self._get_conn()
+        _JSON_COLUMNS = {"tags": "tags_json", "metadata": "metadata_json"}
         sets = []
         vals = []
         for key, value in kwargs.items():
-            col = column_map.get(key, key)
-            if col == "tags_json":
+            col = _JSON_COLUMNS.get(key, key)
+            if col in _JSON_COLUMNS.values():
                 value = json.dumps(value)
-            elif col == "metadata_json":
-                value = json.dumps(value)
-            elif col == "status" and isinstance(value, WorkerStatus):
-                value = value.value
-            elif col == "executor" and isinstance(value, ExecutorType):
+            elif isinstance(value, enum.Enum):
                 value = value.value
             sets.append(f"{col} = ?")
             vals.append(value)
@@ -223,50 +233,20 @@ class WorkerStore:
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> WorkerRecord:
-        keys = row.keys()
-        executor_val = row["executor"] if "executor" in keys else "codex"
-        workflow_id = row["workflow_id"] if "workflow_id" in keys else None
-        stage_index = row["stage_index"] if "stage_index" in keys else None
-        return WorkerRecord(
-            worker_id=row["worker_id"],
-            task_name=row["task_name"],
-            repo_path=row["repo_path"],
-            branch_name=row["branch_name"],
-            worktree_path=row["worktree_path"],
-            worker_dir=row["worker_dir"],
-            model=row["model"],
-            executor=ExecutorType(executor_val),
-            profile=row["profile"],
-            status=WorkerStatus(row["status"]),
-            created_at=row["created_at"],
-            started_at=row["started_at"],
-            ended_at=row["ended_at"],
-            timeout_seconds=row["timeout_seconds"],
-            pid=row["pid"],
-            exit_code=row["exit_code"],
-            codex_command=row["codex_command"],
-            prompt=row["prompt"],
-            result_json_path=row["result_json_path"],
-            stdout_path=row["stdout_path"],
-            stderr_path=row["stderr_path"],
-            prompt_path=row["prompt_path"],
-            meta_path=row["meta_path"],
-            retry_count=row["retry_count"],
-            parent_worker_id=row["parent_worker_id"],
-            tags=json.loads(row["tags_json"]),
-            metadata=json.loads(row["metadata_json"]),
-            error_message=row["error_message"],
-            workflow_id=workflow_id,
-            stage_index=stage_index,
-        )
+        data = dict(row)
+        data["executor"] = ExecutorType(data.get("executor") or "codex")
+        data["status"] = WorkerStatus(data["status"])
+        data["tags"] = json.loads(data.pop("tags_json", "[]"))
+        data["metadata"] = json.loads(data.pop("metadata_json", "{}"))
+        return WorkerRecord.model_validate(data)
 
     # --- Workflow CRUD ---
 
     def insert_workflow(self, record: WorkflowRecord) -> None:
         conn = self._get_conn()
-        stages_json = json.dumps([s.model_dump() for s in record.stages])
+        stages_json = json.dumps([_dump_model(stage) for stage in record.stages])
         states_json = json.dumps(
-            {str(k): v.model_dump() for k, v in record.stage_states.items()}
+            {str(k): _dump_model(state) for k, state in record.stage_states.items()}
         )
         conn.execute(
             _INSERT_WORKFLOW_SQL,
@@ -296,6 +276,8 @@ class WorkerStore:
         return self._row_to_workflow(row)
 
     def update_workflow(self, workflow_id: str, **kwargs) -> None:
+        if not kwargs:
+            return
         conn = self._get_conn()
         sets = []
         vals = []
@@ -305,13 +287,11 @@ class WorkerStore:
             elif key == "stage_states" and isinstance(value, dict):
                 key = "stage_states_json"
                 value = json.dumps(
-                    {str(k): (v.model_dump() if hasattr(v, "model_dump") else v) for k, v in value.items()}
+                    {str(k): _dump_model(state) for k, state in value.items()}
                 )
             elif key == "stages" and isinstance(value, list):
                 key = "stages_json"
-                value = json.dumps(
-                    [s.model_dump() if hasattr(s, "model_dump") else s for s in value]
-                )
+                value = json.dumps([_dump_model(stage) for stage in value])
             sets.append(f"{key} = ?")
             vals.append(value)
         vals.append(workflow_id)
@@ -343,22 +323,17 @@ class WorkerStore:
 
     @staticmethod
     def _row_to_workflow(row: sqlite3.Row) -> WorkflowRecord:
-        stages = [StageDefinition.model_validate(s) for s in json.loads(row["stages_json"])]
-        raw_states = json.loads(row["stage_states_json"])
-        stage_states = {int(k): StageState.model_validate(v) for k, v in raw_states.items()}
-        return WorkflowRecord(
-            workflow_id=row["workflow_id"],
-            name=row["name"],
-            status=WorkflowStatus(row["status"]),
-            repo_path=row["repo_path"],
-            base_ref=row["base_ref"],
-            task_prompt=row["task_prompt"],
-            stages=stages,
-            stage_states=stage_states,
-            created_at=row["created_at"],
-            completed_at=row["completed_at"],
-            error_message=row["error_message"],
-        )
+        data = dict(row)
+        data["status"] = WorkflowStatus(data["status"])
+        data["stages"] = [
+            StageDefinition.model_validate(stage)
+            for stage in json.loads(data.pop("stages_json"))
+        ]
+        data["stage_states"] = {
+            int(index): StageState.model_validate(state)
+            for index, state in json.loads(data.pop("stage_states_json")).items()
+        }
+        return WorkflowRecord.model_validate(data)
 
     def close(self):
         if hasattr(self._local, "conn") and self._local.conn:

@@ -122,33 +122,8 @@ class WorkerStatusPayload(BaseModel):
 
     @classmethod
     def from_record(cls, record: WorkerRecord) -> WorkerStatusPayload:
-        return cls(
-            worker_id=record.worker_id,
-            task_name=record.task_name,
-            status=record.status,
-            repo_path=record.repo_path,
-            branch_name=record.branch_name,
-            worktree_path=record.worktree_path,
-            worker_dir=record.worker_dir,
-            model=record.model,
-            executor=record.executor,
-            profile=record.profile,
-            created_at=record.created_at,
-            started_at=record.started_at,
-            ended_at=record.ended_at,
-            timeout_seconds=record.timeout_seconds,
-            pid=record.pid,
-            exit_code=record.exit_code,
-            retry_count=record.retry_count,
-            tags=record.tags,
-            metadata=record.metadata,
-            error_message=record.error_message,
-            prompt_path=record.prompt_path,
-            result_json_path=record.result_json_path,
-            stdout_path=record.stdout_path,
-            stderr_path=record.stderr_path,
-            meta_path=record.meta_path,
-        )
+        data = record.model_dump(include=set(cls.model_fields))
+        return cls.model_validate(data)
 
 
 # --- Workflow Models ---

@@ -6,32 +6,36 @@ from mcp.server.fastmcp import FastMCP
 from .supervisor import FleetSupervisor
 
 
+def _default_supervisor() -> FleetSupervisor:
+    allowed_repos = [
+        repo.strip()
+        for repo in os.environ.get("FLEET_ALLOWED_REPOS", "").split(",")
+        if repo.strip()
+    ]
+    return FleetSupervisor(
+        base_dir=os.environ.get("FLEET_BASE_DIR"),
+        default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.4"),
+        default_gemini_model=os.environ.get(
+            "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
+        ),
+        default_claude_model=os.environ.get(
+            "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
+        ),
+        default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "max"),
+        default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
+        max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "50")),
+        allowed_repos=allowed_repos or None,
+        default_executor=os.environ.get("FLEET_DEFAULT_EXECUTOR", "codex"),
+        max_spawn_depth=int(os.environ.get("FLEET_MAX_SPAWN_DEPTH", "2")),
+    )
+
+
 def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     """Create the MCP server with all tools registered."""
     mcp = FastMCP("codefleet")
 
     if supervisor is None:
-        allowed_repos_str = os.environ.get("FLEET_ALLOWED_REPOS", "")
-        allowed_repos = (
-            [r.strip() for r in allowed_repos_str.split(",") if r.strip()] or None
-        )
-
-        supervisor = FleetSupervisor(
-            base_dir=os.environ.get("FLEET_BASE_DIR"),
-            default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.4"),
-            default_gemini_model=os.environ.get(
-                "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
-            ),
-            default_claude_model=os.environ.get(
-                "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
-            ),
-            default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "xhigh"),
-            default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
-            max_concurrent=int(os.environ.get("FLEET_MAX_CONCURRENT", "50")),
-            allowed_repos=allowed_repos,
-            default_executor=os.environ.get("FLEET_DEFAULT_EXECUTOR", "codex"),
-            max_spawn_depth=int(os.environ.get("FLEET_MAX_SPAWN_DEPTH", "2")),
-        )
+        supervisor = _default_supervisor()
 
     # --- Worker tools ---
 
