@@ -298,7 +298,7 @@ class TestWorkflowModels:
             executor=ExecutorType.CODEX,
             prompt_template="{task_prompt}",
         )
-        assert sd.worktree_strategy == WorktreeStrategy.INHERIT
+        assert sd.worktree_strategy == WorktreeStrategy.NEW
         assert sd.depends_on == []
         assert sd.model is None
 

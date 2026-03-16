@@ -411,15 +411,28 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
     ) -> dict:
         """Define and start a multi-stage DAG workflow with cross-executor collaboration.
 
+        Each stage is a dict with these fields:
+          name (str, required): Stage name.
+          executor (str, required): One of "codex", "gemini", "claude" (lowercase).
+          prompt_template (str, required): Prompt text. Use {task_prompt} for the workflow task,
+              {stage_N_summary}, {stage_N_files}, {stage_N_next_steps} for prior stage results.
+          depends_on (list[int], default=[]): Stage indices this stage waits for. [] = run immediately.
+          worktree_strategy (str, default="new"): "new" = fresh worktree, "inherit" = reuse
+              the first dependency's worktree (requires depends_on to be non-empty).
+          model (str, optional): Override the executor's default model.
+          timeout_seconds (int, optional): Override default timeout for this stage.
+
+        Example stages:
+          [{"name": "implement", "executor": "codex", "prompt_template": "{task_prompt}"},
+           {"name": "review", "executor": "claude", "worktree_strategy": "inherit",
+            "prompt_template": "Review: {stage_0_summary}", "depends_on": [0]}]
+
         IMPORTANT: Maximize parallelism. Break work into the smallest independent units and
         run them as parallel stages (depends_on=[]) rather than one big sequential stage.
-        For example, "refactor auth module" should become 5-10 parallel file-level stages
-        with a single fan-in review stage, NOT one stage that does everything.
 
         Common patterns:
         - Backend: Codex implements -> Claude reviews -> Codex refines
         - Frontend/UI: Gemini implements -> Claude reviews
-        - Complex refactoring: Claude implements and reviews
         - Competitive: Codex + Claude in parallel -> Claude evaluates
         - Fan-out: N parallel Codex workers (one per file/module) -> Claude reviews all"""
         try:

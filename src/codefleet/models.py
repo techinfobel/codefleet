@@ -127,7 +127,7 @@ class StageDefinition(BaseModel):
     executor: ExecutorType
     prompt_template: str
     model: Optional[str] = None
-    worktree_strategy: WorktreeStrategy = WorktreeStrategy.INHERIT
+    worktree_strategy: WorktreeStrategy = WorktreeStrategy.NEW
     depends_on: list[int] = Field(default_factory=list)
     timeout_seconds: Optional[int] = None
     reasoning_effort: Optional[str] = None

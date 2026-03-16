@@ -75,6 +75,55 @@ _patch_build_sleep = patch(
 
 
 # ---------------------------------------------------------------------------
+# Stage Schema Validation (common LLM mistakes)
+# ---------------------------------------------------------------------------
+
+class TestStageSchemaValidation:
+    """Test that common mistakes when passing stage dicts produce clear errors."""
+
+    def test_missing_prompt_template(self, supervisor, git_repo):
+        """Omitting prompt_template should fail with a clear error."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="prompt_template"):
+            WorkflowEngine(supervisor).create_workflow(
+                name="bad", repo_path=str(git_repo), task_prompt="test",
+                stages=[{"name": "s0", "executor": "codex"}],
+            )
+
+    def test_invalid_executor_value(self, supervisor, git_repo):
+        """Wrong executor value like 'Codex' or 'GPT' should fail."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            WorkflowEngine(supervisor).create_workflow(
+                name="bad", repo_path=str(git_repo), task_prompt="test",
+                stages=[{"name": "s0", "executor": "Codex", "prompt_template": "x"}],
+            )
+
+    def test_root_stage_without_worktree_strategy_succeeds(self, supervisor, git_repo):
+        """Root stage with default worktree_strategy (now 'new') should work."""
+        # This was the #1 source of confusion: default was INHERIT which broke root stages.
+        # After fix, omitting worktree_strategy on a root stage should succeed.
+        stage = StageDefinition.model_validate({
+            "name": "s0", "executor": "codex", "prompt_template": "x",
+        })
+        assert stage.worktree_strategy == WorktreeStrategy.NEW
+        assert stage.depends_on == []
+        # Should pass DAG validation
+        WorkflowEngine._validate_dag([stage])
+
+    def test_inherit_on_root_stage_rejected(self, supervisor, git_repo):
+        """Explicitly using inherit on a root stage should fail validation."""
+        with pytest.raises(ValueError, match="INHERIT.*no dependencies"):
+            WorkflowEngine(supervisor).create_workflow(
+                name="bad", repo_path=str(git_repo), task_prompt="test",
+                stages=[{
+                    "name": "s0", "executor": "codex", "prompt_template": "x",
+                    "worktree_strategy": "inherit", "depends_on": [],
+                }],
+            )
+
+
+# ---------------------------------------------------------------------------
 # DAG Validation
 # ---------------------------------------------------------------------------
 
