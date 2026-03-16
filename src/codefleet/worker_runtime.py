@@ -95,7 +95,8 @@ def build_claude_command(
     cmd = [
         "claude", "-p", instruction,
         "--dangerously-skip-permissions",
-        "--output-format", "json",
+        "--output-format", "stream-json",
+        "--verbose",
     ]
     if model:
         cmd.extend(["--model", model])

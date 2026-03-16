@@ -95,7 +95,8 @@ class TestBuildClaudeCommand:
         assert "-p" in cmd
         assert "--dangerously-skip-permissions" in cmd
         assert "--output-format" in cmd
-        assert "json" in cmd
+        assert "stream-json" in cmd
+        assert "--verbose" in cmd
         assert "--model" in cmd
         assert "claude-opus-4-6" in cmd
         # Default effort is high
