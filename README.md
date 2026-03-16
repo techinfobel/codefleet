@@ -48,7 +48,7 @@ At least one of these AI CLIs must be installed:
 | Agent | Install | Verify |
 |-------|---------|--------|
 | **Codex** | `npm i -g @openai/codex` | `codex --version` |
-| **Gemini** | `npm i -g @anthropic-ai/gemini-cli` | `gemini --version` |
+| **Gemini** | `npm i -g @google/gemini-cli` | `gemini --version` |
 | **Claude** | `npm i -g @anthropic-ai/claude-code` | `claude --version` |
 
 Plus **Git** and **Python 3.11+**.
@@ -142,8 +142,8 @@ Multiple agents work in parallel, then a reviewer checks all of them:
 ```json
 {
   "stages": [
-    {"name": "module-a", "executor": "codex", "worktree_strategy": "new", "depends_on": []},
-    {"name": "module-b", "executor": "gemini", "worktree_strategy": "new", "depends_on": []},
+    {"name": "module-a", "executor": "codex", "prompt_template": "{task_prompt}: module A", "depends_on": []},
+    {"name": "module-b", "executor": "gemini", "prompt_template": "{task_prompt}: module B", "depends_on": []},
     {
       "name": "review",
       "executor": "claude",
@@ -190,6 +190,8 @@ Available in stage `prompt_template` strings:
 | `{stage_N_status}` | `"completed"` or `"blocked"` |
 | `{stage_N_result}` | Full result JSON from stage N |
 
+Literal curly braces in prompts (JSON examples, code snippets) are safe — only the variables above are substituted.
+
 ## MCP Tools
 
 ### Workers
@@ -223,7 +225,7 @@ Available in stage `prompt_template` strings:
 | `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
 | `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
 | `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
-| `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker timeout (seconds) |
+| `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker safety timeout in seconds (stale detection is the primary mechanism) |
 | `FLEET_MAX_CONCURRENT` | `50` | Max simultaneous workers |
 | `FLEET_MAX_SPAWN_DEPTH` | `2` | How deep agents can recursively spawn sub-agents |
 | `FLEET_ALLOWED_REPOS` | *(all)* | Comma-separated allowlist of repo paths |
@@ -237,10 +239,12 @@ Available in stage `prompt_template` strings:
 ## How It Works
 
 1. **Isolation** — each worker gets its own git worktree and branch (`{executor}/{task}/{id}`)
-2. **Supervision** — background threads monitor processes for completion/timeout
-3. **Structured output** — every agent writes a `result.json` with summary, files changed, test results, and next steps
-4. **Durability** — all state lives in SQLite (WAL mode), survives crashes and restarts
-5. **Concurrency control** — configurable limits on concurrent workers and spawn depth
+2. **Stale detection** — monitors stdout/stderr activity; restarts workers that go silent for 2 minutes (preserving worktree state)
+3. **Rate-limit retry** — automatically retries on 429 errors with exponential backoff (4s, 8s, 16s)
+4. **Structured output** — every agent writes a `result.json` with summary, files changed, test results, and next steps
+5. **Structured progress** — status responses include elapsed times, progress bars, and per-stage summaries
+6. **Durability** — all state lives in SQLite (WAL mode), survives crashes and restarts
+7. **Concurrency control** — configurable limits on concurrent workers and spawn depth
 
 ## Development
 
@@ -248,8 +252,8 @@ Available in stage `prompt_template` strings:
 git clone https://github.com/techinfobel/codefleet
 cd codefleet
 uv pip install -e ".[dev]"
-python -m pytest tests/ -v          # 187 tests
-python -m pytest tests/ --cov       # 93% coverage
+python -m pytest tests/ -v          # 192 tests
+python -m pytest tests/ --cov
 ```
 
 ## Recording the Demo
