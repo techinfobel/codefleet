@@ -135,6 +135,11 @@ class FleetSupervisor:
         )
 
     def healthcheck(self) -> dict:
+        from importlib.metadata import version
+        try:
+            app_version = version("codefleet")
+        except Exception:
+            app_version = "unknown"
         executor_paths = {
             "codex": get_codex_path(),
             "gemini": get_gemini_path(),
@@ -144,6 +149,7 @@ class FleetSupervisor:
         return {
             "ok": bool(any(executor_paths.values()) and git_path),
             "app": "codefleet",
+            "version": app_version,
             "db_path": str(self.db_path),
             "base_dir": str(self.base_dir),
             **{f"{name}_found": path is not None for name, path in executor_paths.items()},
