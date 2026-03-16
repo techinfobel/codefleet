@@ -233,13 +233,9 @@ class FleetSupervisor:
         worker_dir = self.base_dir / "workers" / worker_id
         worker_dir.mkdir(parents=True, exist_ok=True)
 
-        prompt_path = worker_dir / "prompt.txt"
-        result_json_path = worker_dir / "result.json"
         stdout_path = worker_dir / "stdout.log"
         stderr_path = worker_dir / "stderr.log"
         meta_path = worker_dir / "meta.json"
-
-        prompt_path.write_text(prompt, encoding="utf-8")
 
         meta = {
             "worker_id": worker_id,
@@ -263,6 +259,17 @@ class FleetSupervisor:
         else:
             worktree_path = worker_dir / "worktree"
             create_worktree(repo, worktree_path, branch_name, base_ref)
+
+        # Place prompt and result inside the worktree so sandboxed executors
+        # (especially Codex) can access them without path violations.
+        codefleet_dir = worktree_path / ".codefleet"
+        codefleet_dir.mkdir(exist_ok=True)
+        gitignore = codefleet_dir / ".gitignore"
+        if not gitignore.exists():
+            gitignore.write_text("*\n")
+        prompt_path = codefleet_dir / "prompt.txt"
+        result_json_path = codefleet_dir / "result.json"
+        prompt_path.write_text(prompt, encoding="utf-8")
 
         cmd = build_worker_command(
             executor=executor_type.value,

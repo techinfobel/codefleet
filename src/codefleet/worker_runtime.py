@@ -28,6 +28,7 @@ def _result_instruction(prompt_path: Path, result_json_path: Path) -> str:
     return (
         f"Read the task prompt from {prompt_path}. "
         f"Work in the current directory (a git worktree). "
+        f"Do NOT commit or modify anything in the .codefleet/ directory. "
         f"Run relevant tests where appropriate. "
         f"Write a single JSON object to {result_json_path} with this schema: "
         f'{{"summary": "string", "files_changed": ["path"], '
