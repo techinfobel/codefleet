@@ -63,7 +63,7 @@ class TestBuildGeminiCommand:
         assert "--sandbox" in cmd
         assert "false" in cmd
         assert "--output-format" in cmd
-        assert "json" in cmd
+        assert "stream-json" in cmd
         assert "-m" in cmd
         assert "gemini-3.1-pro-preview" in cmd
 

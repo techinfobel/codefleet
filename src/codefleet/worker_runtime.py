@@ -73,7 +73,7 @@ def build_gemini_command(
         "gemini", "-p", instruction,
         "--approval-mode", "yolo",
         "--sandbox", "false",
-        "--output-format", "json",
+        "--output-format", "stream-json",
     ]
     if model:
         cmd.extend(["-m", model])
