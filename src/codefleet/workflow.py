@@ -365,7 +365,20 @@ class WorkflowEngine:
                 logger.warning("Failed to parse result for stage %d (worker %s)",
                                i, state.worker_id, exc_info=True)
 
-        return template.format_map(variables)
+        # Use regex substitution instead of str.format_map so that literal
+        # braces in prompts (JSON examples, code, etc.) don't crash.
+        # Known variable prefixes get empty-string defaults; anything else
+        # is left untouched.
+        import re
+        _KNOWN_PREFIXES = ("task_prompt", "stage_")
+        def _replace(m: re.Match) -> str:
+            key = m.group(1)
+            if key in variables:
+                return str(variables[key])
+            if any(key.startswith(p) for p in _KNOWN_PREFIXES):
+                return ""  # known template var not yet populated
+            return m.group(0)  # leave truly unknown {keys} as-is
+        return re.sub(r"\{(\w+)\}", _replace, template)
 
     @staticmethod
     def _validate_dag(stages: list[StageDefinition]) -> None:

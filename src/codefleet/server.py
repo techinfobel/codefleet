@@ -416,6 +416,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
           executor (str, required): One of "codex", "gemini", "claude" (lowercase).
           prompt_template (str, required): Prompt text. Use {task_prompt} for the workflow task,
               {stage_N_summary}, {stage_N_files}, {stage_N_next_steps} for prior stage results.
+              Literal curly braces (JSON, code examples) are safe — only known variables are substituted.
           depends_on (list[int], default=[]): Stage indices this stage waits for. [] = run immediately.
           worktree_strategy (str, default="new"): "new" = fresh worktree, "inherit" = reuse
               the first dependency's worktree (requires depends_on to be non-empty).
