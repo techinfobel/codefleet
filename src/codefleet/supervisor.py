@@ -45,6 +45,8 @@ DEFAULT_MAX_SPAWN_DEPTH = 2
 DEFAULT_RATE_LIMIT_RETRIES = 3
 DEFAULT_RATE_LIMIT_BASE_DELAY = 4.0
 DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
+DEFAULT_STALE_TIMEOUT = 300.0  # 5 minutes
+DEFAULT_STALE_MAX_RESTARTS = 2
 
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
@@ -81,6 +83,8 @@ class FleetSupervisor:
         rate_limit_max_retries: int = DEFAULT_RATE_LIMIT_RETRIES,
         rate_limit_base_delay: float = DEFAULT_RATE_LIMIT_BASE_DELAY,
         rate_limit_max_delay: float = DEFAULT_RATE_LIMIT_MAX_DELAY,
+        stale_timeout: float = DEFAULT_STALE_TIMEOUT,
+        stale_max_restarts: int = DEFAULT_STALE_MAX_RESTARTS,
     ):
         if default_timeout <= 0:
             raise ValueError(f"default_timeout must be positive, got {default_timeout}")
@@ -108,6 +112,8 @@ class FleetSupervisor:
         self.rate_limit_max_retries = rate_limit_max_retries
         self.rate_limit_base_delay = rate_limit_base_delay
         self.rate_limit_max_delay = rate_limit_max_delay
+        self.stale_timeout = stale_timeout
+        self.stale_max_restarts = stale_max_restarts
 
         self._active_workers: dict[str, WorkerProcess] = {}
         self._workflow_engine = None
@@ -304,6 +310,8 @@ class FleetSupervisor:
             max_retries=self.rate_limit_max_retries,
             retry_base_delay=self.rate_limit_base_delay,
             retry_max_delay=self.rate_limit_max_delay,
+            stale_timeout=self.stale_timeout,
+            stale_max_restarts=self.stale_max_restarts,
         )
 
         pid = worker_proc.start()

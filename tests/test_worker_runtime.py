@@ -301,8 +301,8 @@ class TestWorkerProcess:
 
         assert completed["exit_code"] == 1
 
-    def test_timeout(self, tmp_path):
-        """Run a subprocess that exceeds timeout."""
+    def test_stale_kills_silent_process(self, tmp_path):
+        """A silent process is killed by stale detection."""
         stdout_path = tmp_path / "stdout.log"
         stderr_path = tmp_path / "stderr.log"
 
@@ -313,13 +313,15 @@ class TestWorkerProcess:
             completed["error"] = error
 
         wp = WorkerProcess(
-            worker_id="w_test_timeout",
+            worker_id="w_test_stale",
             command=[sys.executable, "-c", "import time; time.sleep(60)"],
             cwd=tmp_path,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            timeout_seconds=2,
+            timeout_seconds=600,
             on_complete=on_complete,
+            stale_timeout=2.0,
+            stale_max_restarts=0,  # kill immediately, no restarts
         )
 
         wp.start()
@@ -329,7 +331,7 @@ class TestWorkerProcess:
             time.sleep(0.2)
 
         assert "error" in completed
-        assert "timed out" in completed["error"].lower()
+        assert "stale" in completed["error"].lower()
 
     def test_cancel(self, tmp_path):
         """Cancel a running subprocess."""
@@ -568,3 +570,138 @@ class TestRateLimitRetry:
 
         assert "error" in completed
         assert "cancelled" in completed["error"].lower()
+
+
+class TestStaleDetection:
+    """Test stale process detection and restart."""
+
+    def test_stale_restart_recovers(self, tmp_path):
+        """A stale process is killed and restarted, second attempt succeeds."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+        marker = tmp_path / "attempt"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        # First run: write one line then go silent (stale).
+        # Second run (after restart): marker exists, succeed immediately.
+        script_path = tmp_path / "stale_script.py"
+        script_path.write_text(
+            "import sys, os, time\n"
+            f"marker = {str(marker)!r}\n"
+            "if not os.path.exists(marker):\n"
+            "    open(marker, 'w').close()\n"
+            "    print('starting...', file=sys.stderr)\n"
+            "    time.sleep(300)  # go silent\n"
+            "else:\n"
+            "    print('recovered', file=sys.stderr)\n"
+            "    print('ok')\n"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_stale_ok",
+            command=[sys.executable, str(script_path)],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=600,
+            on_complete=on_complete,
+            stale_timeout=2.0,  # fast for tests
+            stale_max_restarts=2,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 20
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert completed["exit_code"] == 0
+        assert wp._stale_restarts == 1
+        stderr_content = stderr_path.read_text()
+        assert "Stale" in stderr_content
+        assert "Restart 1/2" in stderr_content
+
+    def test_stale_exhausted(self, tmp_path):
+        """Worker fails after exhausting stale restarts."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        # Always goes silent after initial output
+        script = (
+            "import sys, time; "
+            "print('start', file=sys.stderr); "
+            "time.sleep(300)"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_stale_exhaust",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=600,
+            on_complete=on_complete,
+            stale_timeout=2.0,
+            stale_max_restarts=1,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 20
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert "error" in completed
+        assert "stale" in completed["error"].lower()
+        assert wp._stale_restarts == 1
+
+    def test_active_process_not_stale(self, tmp_path):
+        """A process that keeps writing output is never considered stale."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+
+        # Writes output every 0.5s for 3s then exits — should never trigger
+        # stale detection even with a 2s stale_timeout.
+        script = (
+            "import sys, time\n"
+            "for i in range(6):\n"
+            "    print(f'tick {i}', file=sys.stderr)\n"
+            "    time.sleep(0.5)\n"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_active",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=600,
+            on_complete=on_complete,
+            stale_timeout=2.0,
+            stale_max_restarts=2,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 15
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert completed["exit_code"] == 0
+        assert wp._stale_restarts == 0

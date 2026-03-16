@@ -163,6 +163,8 @@ class WorkerProcess:
         max_retries: int = 0,
         retry_base_delay: float = 4.0,
         retry_max_delay: float = 60.0,
+        stale_timeout: float = 300.0,
+        stale_max_restarts: int = 2,
     ):
         self.worker_id = worker_id
         self.command = command
@@ -174,9 +176,12 @@ class WorkerProcess:
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
+        self.stale_timeout = stale_timeout
+        self.stale_max_restarts = stale_max_restarts
         self._process: Optional[subprocess.Popen] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._retry_count = 0
+        self._stale_restarts = 0
         self._cancelled = threading.Event()
 
     @property
@@ -224,12 +229,44 @@ class WorkerProcess:
         except Exception:
             return False
 
+    def _output_size(self) -> int:
+        """Return combined size of stdout + stderr files."""
+        total = 0
+        for p in (self.stdout_path, self.stderr_path):
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+        return total
+
+    def _restart_process(self, stdout_f, stderr_f, reason: str):
+        """Kill current process and restart in the same worktree.
+
+        Returns new (stdout_f, stderr_f) file handles.
+        """
+        self._terminate()
+        stdout_f.close()
+        stderr_f.close()
+        with open(self.stderr_path, "a") as f:
+            f.write(f"\n--- [codefleet] {reason} ---\n")
+        stdout_f = open(self.stdout_path, "w")
+        stderr_f = open(self.stderr_path, "a")
+        self._process = subprocess.Popen(
+            self.command,
+            cwd=str(self.cwd),
+            stdout=stdout_f,
+            stderr=stderr_f,
+            start_new_session=True,
+        )
+        return stdout_f, stderr_f
+
     def _monitor(self, stdout_f, stderr_f):
-        """Monitor the process for completion, timeout, or rate-limit retry."""
+        """Monitor the process for completion, stale detection, or rate-limit retry."""
         exit_code = -1
         error = None
+        last_output_size = self._output_size()
+        last_activity = time.monotonic()
         try:
-            start_time = time.monotonic()
             while True:
                 try:
                     exit_code = self._process.wait(timeout=1.0)
@@ -267,7 +304,6 @@ class WorkerProcess:
                                 error = "Cancelled during retry backoff"
                                 return
 
-                            # Restart process (fresh stdout, append stderr)
                             stdout_f = open(self.stdout_path, "w")
                             stderr_f = open(self.stderr_path, "a")
                             self._process = subprocess.Popen(
@@ -277,15 +313,50 @@ class WorkerProcess:
                                 stderr=stderr_f,
                                 start_new_session=True,
                             )
-                            start_time = time.monotonic()
+                            last_output_size = self._output_size()
+                            last_activity = time.monotonic()
                             continue
 
                     return
                 except subprocess.TimeoutExpired:
-                    if time.monotonic() - start_time >= self.timeout_seconds:
-                        self._terminate()
-                        error = "Worker timed out"
-                        return
+                    # Check for activity (output growth)
+                    current_size = self._output_size()
+                    now = time.monotonic()
+                    if current_size != last_output_size:
+                        last_output_size = current_size
+                        last_activity = now
+
+                    # Stale detection: no output for stale_timeout seconds
+                    if (
+                        self.stale_timeout > 0
+                        and now - last_activity >= self.stale_timeout
+                        and not self._cancelled.is_set()
+                    ):
+                        if self._stale_restarts < self.stale_max_restarts:
+                            self._stale_restarts += 1
+                            logger.info(
+                                "Worker %s stale (no output for %.0fs), "
+                                "restart %d/%d",
+                                self.worker_id,
+                                now - last_activity,
+                                self._stale_restarts,
+                                self.stale_max_restarts,
+                            )
+                            stdout_f, stderr_f = self._restart_process(
+                                stdout_f,
+                                stderr_f,
+                                f"Stale (no output for {int(now - last_activity)}s). "
+                                f"Restart {self._stale_restarts}/{self.stale_max_restarts}",
+                            )
+                            last_output_size = self._output_size()
+                            last_activity = time.monotonic()
+                        else:
+                            self._terminate()
+                            error = (
+                                f"Worker stale after {self._stale_restarts} restarts "
+                                f"(no output for {int(now - last_activity)}s)"
+                            )
+                            return
         except Exception as e:
             error = f"Monitor error: {e}"
         finally:

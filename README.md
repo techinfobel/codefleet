@@ -231,6 +231,8 @@ Available in stage `prompt_template` strings:
 | `FLEET_RATE_LIMIT_MAX_RETRIES` | `3` | Auto-retries on 429 rate-limit errors |
 | `FLEET_RATE_LIMIT_BASE_DELAY` | `4.0` | Initial backoff delay in seconds (doubles each retry) |
 | `FLEET_RATE_LIMIT_MAX_DELAY` | `60.0` | Maximum backoff delay cap in seconds |
+| `FLEET_STALE_TIMEOUT` | `300` | Seconds of no output before a worker is considered stale and restarted |
+| `FLEET_STALE_MAX_RESTARTS` | `2` | Max stale restarts before giving up |
 
 ## How It Works
 
