@@ -163,7 +163,7 @@ class WorkerProcess:
         max_retries: int = 0,
         retry_base_delay: float = 4.0,
         retry_max_delay: float = 60.0,
-        stale_timeout: float = 300.0,
+        stale_timeout: float = 120.0,
         stale_max_restarts: int = 2,
     ):
         self.worker_id = worker_id

@@ -184,7 +184,7 @@ def _default_supervisor() -> FleetSupervisor:
         rate_limit_max_retries=int(os.environ.get("FLEET_RATE_LIMIT_MAX_RETRIES", "3")),
         rate_limit_base_delay=float(os.environ.get("FLEET_RATE_LIMIT_BASE_DELAY", "4.0")),
         rate_limit_max_delay=float(os.environ.get("FLEET_RATE_LIMIT_MAX_DELAY", "60.0")),
-        stale_timeout=float(os.environ.get("FLEET_STALE_TIMEOUT", "300")),
+        stale_timeout=float(os.environ.get("FLEET_STALE_TIMEOUT", "120")),
         stale_max_restarts=int(os.environ.get("FLEET_STALE_MAX_RESTARTS", "2")),
     )
 
