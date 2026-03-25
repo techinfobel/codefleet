@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from collections import deque
@@ -13,6 +14,7 @@ from .models import (
     WorkerRecord,
     WorkerStatus,
     WorkerStatusPayload,
+    WorkflowStatus,
     parse_result_file,
 )
 from .store import WorkerStore
@@ -45,7 +47,7 @@ DEFAULT_MAX_SPAWN_DEPTH = 2
 DEFAULT_RATE_LIMIT_RETRIES = 3
 DEFAULT_RATE_LIMIT_BASE_DELAY = 4.0
 DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
-DEFAULT_STALE_TIMEOUT = 120.0  # 2 minutes
+DEFAULT_STALE_TIMEOUT = 180.0  # 3 minutes
 DEFAULT_STALE_MAX_RESTARTS = 2
 
 _EXECUTOR_REASONING_DEFAULTS = {
@@ -237,6 +239,28 @@ class FleetSupervisor:
         stderr_path = worker_dir / "stderr.log"
         meta_path = worker_dir / "meta.json"
 
+        if existing_worktree_path and existing_branch_name:
+            worktree_path = Path(existing_worktree_path)
+            branch_name = existing_branch_name
+            owns_worktree = False
+        else:
+            worktree_path = worker_dir / "worktree"
+            create_worktree(repo, worktree_path, branch_name, base_ref)
+            owns_worktree = True
+
+        # Resolve base commit hash for result salvaging later
+        base_commit = None
+        try:
+            base_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(worktree_path),
+                capture_output=True, text=True, timeout=10,
+            )
+            if base_result.returncode == 0:
+                base_commit = base_result.stdout.strip()
+        except Exception:
+            pass
+
         meta = {
             "worker_id": worker_id,
             "task_name": task_name,
@@ -250,15 +274,9 @@ class FleetSupervisor:
             "parent_worker_id": parent_worker_id,
             "workflow_id": workflow_id,
             "stage_index": stage_index,
+            "base_commit": base_commit,
         }
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-        if existing_worktree_path and existing_branch_name:
-            worktree_path = Path(existing_worktree_path)
-            branch_name = existing_branch_name
-        else:
-            worktree_path = worker_dir / "worktree"
-            create_worktree(repo, worktree_path, branch_name, base_ref)
 
         # Place prompt and result inside the worktree so sandboxed executors
         # (especially Codex) can access them without path violations.
@@ -310,24 +328,38 @@ class FleetSupervisor:
             stage_index=stage_index,
         )
 
-        self.store.insert_worker(record)
+        try:
+            self.store.insert_worker(record)
+        except Exception:
+            if owns_worktree:
+                self._cleanup_failed_creation(
+                    repo, worktree_path, branch_name, worker_dir
+                )
+            raise
 
-        worker_proc = WorkerProcess(
-            worker_id=worker_id,
-            command=cmd,
-            cwd=worktree_path,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            timeout_seconds=timeout_seconds,
-            on_complete=self._on_worker_complete,
-            max_retries=self.rate_limit_max_retries,
-            retry_base_delay=self.rate_limit_base_delay,
-            retry_max_delay=self.rate_limit_max_delay,
-            stale_timeout=self.stale_timeout,
-            stale_max_restarts=self.stale_max_restarts,
-        )
+        try:
+            worker_proc = WorkerProcess(
+                worker_id=worker_id,
+                command=cmd,
+                cwd=worktree_path,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                timeout_seconds=timeout_seconds,
+                on_complete=self._on_worker_complete,
+                max_retries=self.rate_limit_max_retries,
+                retry_base_delay=self.rate_limit_base_delay,
+                retry_max_delay=self.rate_limit_max_delay,
+                stale_timeout=self.stale_timeout,
+                stale_max_restarts=self.stale_max_restarts,
+            )
+            pid = worker_proc.start()
+        except Exception:
+            if owns_worktree:
+                self._cleanup_failed_creation(
+                    repo, worktree_path, branch_name, worker_dir
+                )
+            raise
 
-        pid = worker_proc.start()
         self._active_workers[worker_id] = worker_proc
 
         record = self.store.update_worker(
@@ -338,6 +370,31 @@ class FleetSupervisor:
         )
 
         return WorkerStatusPayload.from_record(record)
+
+    def _cleanup_failed_creation(
+        self, repo: Path, worktree_path: Path, branch_name: str, worker_dir: Path
+    ):
+        """Clean up worktree and branch after a failed worker creation."""
+        try:
+            if worktree_path.exists():
+                remove_worktree(repo, worktree_path)
+        except Exception:
+            logger.debug(
+                "Cleanup: failed to remove worktree %s", worktree_path, exc_info=True
+            )
+        try:
+            delete_branch(repo, branch_name)
+        except Exception:
+            logger.debug(
+                "Cleanup: failed to delete branch %s", branch_name, exc_info=True
+            )
+        try:
+            if worker_dir.exists():
+                shutil.rmtree(worker_dir)
+        except Exception:
+            logger.debug(
+                "Cleanup: failed to remove worker dir %s", worker_dir, exc_info=True
+            )
 
     def _compute_spawn_depth(self, worker_id: str) -> int:
         """Walk the parent_worker_id chain to compute spawn depth."""
@@ -350,6 +407,97 @@ class FleetSupervisor:
             depth += 1
             current_id = record.parent_worker_id
         return depth
+
+    def _salvage_result(self, record: WorkerRecord) -> bool:
+        """Check if a worker produced meaningful changes despite invalid result.json.
+
+        If changes are detected, writes a synthetic result.json so downstream
+        workflow stages can still access the work. Returns True if salvage succeeded.
+        """
+        worktree = Path(record.worktree_path)
+        if not worktree.exists():
+            return False
+
+        files_changed: set[str] = set()
+
+        # Read base commit from meta.json
+        base_commit = None
+        meta_path = Path(record.meta_path)
+        try:
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                base_commit = meta.get("base_commit")
+        except Exception:
+            pass
+
+        # Check committed changes since branch creation
+        if base_commit:
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--name-only", base_commit, "HEAD"],
+                    cwd=str(worktree),
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    files_changed.update(
+                        f.strip()
+                        for f in result.stdout.strip().split("\n")
+                        if f.strip()
+                    )
+            except Exception:
+                pass
+
+        # Check uncommitted and staged changes
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(worktree),
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.strip().split("\n"):
+                    if line.strip():
+                        # porcelain format: XY filename
+                        files_changed.add(line[3:].strip())
+        except Exception:
+            pass
+
+        # Filter out .codefleet/ internal files
+        files_changed = {
+            f for f in files_changed if not f.startswith(".codefleet/")
+        }
+
+        if not files_changed:
+            return False
+
+        # Write a synthetic result.json
+        result_path = Path(record.result_json_path)
+        salvaged = {
+            "summary": (
+                "Worker completed but did not write a valid result.json. "
+                "Changes were detected and salvaged from the worktree."
+            ),
+            "files_changed": sorted(files_changed),
+            "status": "completed",
+            "next_steps": ["Review salvaged changes manually"],
+        }
+        try:
+            result_path.write_text(
+                json.dumps(salvaged, indent=2), encoding="utf-8"
+            )
+            logger.info(
+                "Salvaged result for worker %s: %d files changed",
+                record.worker_id,
+                len(files_changed),
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "Failed to write salvaged result for %s",
+                record.worker_id,
+                exc_info=True,
+            )
+            return False
 
     def _on_worker_complete(
         self, worker_id: str, exit_code: int, error: Optional[str]
@@ -378,8 +526,15 @@ class FleetSupervisor:
             try:
                 parse_result_file(result_path)
             except (FileNotFoundError, ValueError) as e:
-                update["status"] = WorkerStatus.FAILED
-                update["error_message"] = f"Result validation failed: {e}"
+                if self._salvage_result(record):
+                    update["status"] = WorkerStatus.SUCCEEDED
+                    update["error_message"] = (
+                        f"Result file invalid ({e}), but changes detected "
+                        f"in worktree. Salvaged result written."
+                    )
+                else:
+                    update["status"] = WorkerStatus.FAILED
+                    update["error_message"] = f"Result validation failed: {e}"
             else:
                 update["status"] = WorkerStatus.SUCCEEDED
 
@@ -392,7 +547,26 @@ class FleetSupervisor:
                     worker_id, record.workflow_id, record.stage_index
                 )
             except Exception:
-                logger.exception("Error in workflow stage completion callback")
+                logger.exception(
+                    "Error in workflow stage completion callback for worker %s",
+                    worker_id,
+                )
+                # Mark workflow as FAILED so it doesn't hang forever
+                try:
+                    self.store.update_workflow(
+                        record.workflow_id,
+                        status=WorkflowStatus.FAILED,
+                        completed_at=time.time(),
+                        error_message=(
+                            f"Internal error in stage completion callback "
+                            f"for worker {worker_id}"
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to mark workflow %s as failed after callback error",
+                        record.workflow_id,
+                    )
 
     def get_worker_status(self, worker_id: str) -> WorkerStatusPayload:
         record = self.store.get_worker(worker_id)

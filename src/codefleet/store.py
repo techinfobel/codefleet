@@ -1,9 +1,12 @@
 import enum
 import json
+import logging
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     ExecutorType,
@@ -128,7 +131,7 @@ class WorkerStore:
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
                 if "duplicate column" in msg or "already exists" in msg or "no such column" in msg:
-                    pass  # Column already exists or source column missing (rename already done)
+                    logger.debug("Migration already applied: %s", migration[:60])
                 else:
                     raise
         conn.commit()

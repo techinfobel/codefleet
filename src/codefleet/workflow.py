@@ -75,7 +75,20 @@ class WorkflowEngine:
         root_indices = [i for i, s in enumerate(stage_defs) if not s.depends_on]
         with self._lock:
             for idx in root_indices:
-                self._start_stage(workflow_id, idx, record=record)
+                try:
+                    self._start_stage(workflow_id, idx, record=record)
+                except Exception as e:
+                    logger.exception(
+                        "Failed to start root stage %d of workflow %s",
+                        idx, workflow_id,
+                    )
+                    record = self.supervisor.store.update_workflow(
+                        workflow_id,
+                        status=WorkflowStatus.FAILED,
+                        completed_at=time.time(),
+                        error_message=f"Failed to start stage {idx}: {e}",
+                    )
+                    return WorkflowStatusPayload.from_record(record)
 
             record = self.supervisor.store.update_workflow(
                 workflow_id, status=WorkflowStatus.RUNNING
@@ -256,7 +269,25 @@ class WorkflowEngine:
                 for dep in stage_def.depends_on
             )
             if all_deps_done:
-                self._start_stage(workflow_id, i, record=record)
+                try:
+                    self._start_stage(workflow_id, i, record=record)
+                except Exception as e:
+                    logger.exception(
+                        "Failed to start stage %d of workflow %s", i, workflow_id
+                    )
+                    state = record.stage_states.get(i, StageState())
+                    state.status = WorkerStatus.FAILED
+                    record.stage_states[i] = state
+                    self.supervisor.store.update_workflow(
+                        workflow_id,
+                        status=WorkflowStatus.FAILED,
+                        stage_states=record.stage_states,
+                        completed_at=time.time(),
+                        error_message=(
+                            f"Failed to start stage {i} ({stage_def.name}): {e}"
+                        ),
+                    )
+                    return
 
         record = self.supervisor.store.get_workflow(workflow_id)
         statuses = [
@@ -361,9 +392,14 @@ class WorkflowEngine:
                     f"stage_{i}_next_steps": "\n".join(result.next_steps),
                     f"stage_{i}_status": result.status.value,
                 })
-            except Exception:
-                logger.warning("Failed to parse result for stage %d (worker %s)",
-                               i, state.worker_id, exc_info=True)
+            except Exception as e:
+                logger.error(
+                    "Failed to parse result for stage %d (worker %s): %s",
+                    i, state.worker_id, e, exc_info=True,
+                )
+                variables[f"stage_{i}_summary"] = (
+                    f"[ERROR: stage {i} result unavailable]"
+                )
 
         # Use regex substitution instead of str.format_map so that literal
         # braces in prompts (JSON examples, code, etc.) don't crash.
