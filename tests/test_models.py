@@ -9,6 +9,7 @@ from codefleet.models import (
     ResultStatus,
     StageDefinition,
     StageState,
+    SupportedModel,
     WorkerRecord,
     WorkerResult,
     WorkerStatus,
@@ -259,6 +260,21 @@ class TestExecutorType:
             meta_path="/mp",
         )
         assert record.executor == ExecutorType.GEMINI
+
+
+class TestSupportedModel:
+    def test_values(self):
+        assert SupportedModel.GPT_5_4.value == "gpt-5.4"
+        assert SupportedModel.GEMINI_3_1_PRO_PREVIEW.value == "gemini-3.1-pro-preview"
+        assert SupportedModel.CLAUDE_OPUS_4_6.value == "claude-opus-4-6"
+        assert SupportedModel.CLAUDE_SONNET_4_6.value == "claude-sonnet-4-6"
+
+    def test_from_string(self):
+        assert SupportedModel("gpt-5.4") == SupportedModel.GPT_5_4
+        assert (
+            SupportedModel("claude-sonnet-4-6")
+            == SupportedModel.CLAUDE_SONNET_4_6
+        )
 
     def test_payload_includes_executor(self):
         record = WorkerRecord(

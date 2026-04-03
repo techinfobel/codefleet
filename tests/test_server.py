@@ -76,6 +76,11 @@ class TestServerToolCalls:
         server = create_server(supervisor=supervisor)
         result = await server.call_tool("healthcheck", {})
         assert len(result) > 0
+        text = result[0].text
+        assert "supported_models" in text
+        assert "gpt-5.4" in text
+        assert "gemini-3.1-pro-preview" in text
+        assert "claude-sonnet-4-6" in text
 
     @pytest.mark.asyncio
     async def test_executor_guide_tool(self, supervisor):

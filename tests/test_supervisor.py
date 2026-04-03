@@ -64,6 +64,12 @@ class TestHealthcheck:
         assert "db_path" in result
         assert "base_dir" in result
         assert "max_spawn_depth" in result
+        assert result["supported_models"]["codex"] == ["gpt-5.4"]
+        assert result["supported_models"]["gemini"] == ["gemini-3.1-pro-preview"]
+        assert result["supported_models"]["claude"] == [
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+        ]
 
 
 class TestCreateWorkerValidation:
@@ -98,6 +104,16 @@ class TestCreateWorkerValidation:
                 repo_path=str(other_repo),
                 task_name="test",
                 prompt="do something",
+            )
+
+    def test_invalid_model_for_executor(self, supervisor, git_repo):
+        with pytest.raises(ValueError, match="Unsupported model 'o3'"):
+            supervisor.create_worker(
+                repo_path=str(git_repo),
+                task_name="bad-model",
+                prompt="do something",
+                executor="codex",
+                model="o3",
             )
 
 

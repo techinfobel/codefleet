@@ -14,6 +14,13 @@ class ExecutorType(str, enum.Enum):
     CLAUDE = "claude"
 
 
+class SupportedModel(str, enum.Enum):
+    GPT_5_4 = "gpt-5.4"
+    GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
+    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
+    CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+
+
 class WorkerStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"

@@ -11,6 +11,7 @@ from typing import Optional
 
 from .models import (
     ExecutorType,
+    SupportedModel,
     WorkerRecord,
     WorkerStatus,
     WorkerStatusPayload,
@@ -51,6 +52,15 @@ DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
 DEFAULT_STALE_TIMEOUT = 180.0  # 3 minutes
 DEFAULT_STALE_MAX_RESTARTS = 2
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
+
+_SUPPORTED_MODELS = {
+    ExecutorType.CODEX: (SupportedModel.GPT_5_4.value,),
+    ExecutorType.GEMINI: (SupportedModel.GEMINI_3_1_PRO_PREVIEW.value,),
+    ExecutorType.CLAUDE: (
+        SupportedModel.CLAUDE_OPUS_4_6.value,
+        SupportedModel.CLAUDE_SONNET_4_6.value,
+    ),
+}
 
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
@@ -168,6 +178,10 @@ class FleetSupervisor:
             "default_executor": self.default_executor.value,
             "max_spawn_depth": self.max_spawn_depth,
             "heartbeat_interval": self.heartbeat_interval,
+            "supported_models": {
+                executor.value: list(models)
+                for executor, models in _SUPPORTED_MODELS.items()
+            },
         }
 
     def create_worker(
@@ -224,6 +238,15 @@ class FleetSupervisor:
                 ExecutorType.GEMINI: self.default_gemini_model,
                 ExecutorType.CLAUDE: self.default_claude_model,
             }[executor_type]
+        else:
+            model = str(model)
+
+        allowed_models = _SUPPORTED_MODELS[executor_type]
+        if model not in allowed_models:
+            raise ValueError(
+                f"Unsupported model '{model}' for executor '{executor_type.value}'. "
+                f"Allowed models: {', '.join(allowed_models)}"
+            )
 
         if reasoning_effort is None:
             reasoning_effort = _EXECUTOR_REASONING_DEFAULTS.get(

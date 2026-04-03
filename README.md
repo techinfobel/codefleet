@@ -53,6 +53,14 @@ At least one of these AI CLIs must be installed:
 
 Plus **Git** and **Python 3.11+**.
 
+### Supported Models
+
+`codefleet` constrains worker model selection to a small allowlist so orchestrators do not invent unsupported model names:
+
+- Codex: `gpt-5.4`
+- Gemini: `gemini-3.1-pro-preview`
+- Claude: `claude-opus-4-6`, `claude-sonnet-4-6`
+
 ## Register with Claude Code
 
 ```bash

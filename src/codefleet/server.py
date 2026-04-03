@@ -5,6 +5,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from .models import SupportedModel
 from .supervisor import FleetSupervisor
 
 logger = logging.getLogger(__name__)
@@ -298,7 +299,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         task_name: str,
         prompt: str,
         base_ref: str = "HEAD",
-        model: Optional[str] = None,
+        model: Optional[SupportedModel] = None,
         executor: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
@@ -317,14 +318,19 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         Executor hints (no need to call executor_guide for these):
         - 'codex': terminal/CLI, code review, DevOps, quick fixes. Token-efficient.
         - 'gemini': frontend/UI, scientific code, large codebases, budget tasks.
-        - 'claude': multi-file refactoring, architecture, security, first-pass correctness."""
+        - 'claude': multi-file refactoring, architecture, security, first-pass correctness.
+
+        Allowed model values:
+        - codex: gpt-5.4
+        - gemini: gemini-3.1-pro-preview
+        - claude: claude-opus-4-6, claude-sonnet-4-6"""
         try:
             result = supervisor.create_worker(
                 repo_path=repo_path,
                 task_name=task_name,
                 prompt=prompt,
                 base_ref=base_ref,
-                model=model,
+                model=model.value if model else None,
                 executor=executor,
                 reasoning_effort=reasoning_effort,
                 timeout_seconds=timeout_seconds,
@@ -430,6 +436,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
           worktree_strategy (str, default="new"): "new" = fresh worktree, "inherit" = reuse
               the first dependency's worktree (requires depends_on to be non-empty).
           model (str, optional): Override the executor's default model.
+              Allowed values: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4-6, claude-sonnet-4-6.
           timeout_seconds (int, optional): Override default timeout for this stage.
 
         Example stages:
