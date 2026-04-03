@@ -539,7 +539,35 @@ class FleetSupervisor:
                 "Recovered completed worker after supervisor restart"
             )
 
-        self.store.update_worker(record.worker_id, **update)
+        record = self.store.update_worker(record.worker_id, **update)
+
+        if record and record.workflow_id is not None and record.stage_index is not None:
+            try:
+                self.workflow_engine.on_stage_complete(
+                    record.worker_id, record.workflow_id, record.stage_index
+                )
+            except Exception:
+                logger.exception(
+                    "Error in workflow stage completion callback for "
+                    "recovered worker %s",
+                    record.worker_id,
+                )
+                try:
+                    self.store.update_workflow(
+                        record.workflow_id,
+                        status=WorkflowStatus.FAILED,
+                        completed_at=time.time(),
+                        error_message=(
+                            f"Internal error in stage completion callback "
+                            f"for recovered worker {record.worker_id}"
+                        ),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to mark workflow %s as failed after "
+                        "recovery callback error",
+                        record.workflow_id,
+                    )
 
     def _cleanup_failed_creation(
         self, repo: Path, worktree_path: Path, branch_name: str, worker_dir: Path
