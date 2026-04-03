@@ -106,6 +106,21 @@ class TestWorkerStore:
         updated = store.get_worker("w_test001")
         assert updated.error_message == "Something went wrong"
 
+    def test_update_heartbeat_fields(self, store):
+        record = _make_record()
+        store.insert_worker(record)
+        now = time.time()
+        store.update_worker(
+            "w_test001",
+            last_heartbeat_at=now,
+            last_activity_at=now - 5,
+            heartbeat_message="Worker running; last output 5s ago",
+        )
+        updated = store.get_worker("w_test001")
+        assert updated.last_heartbeat_at == now
+        assert updated.last_activity_at == now - 5
+        assert updated.heartbeat_message == "Worker running; last output 5s ago"
+
     def test_list_all_workers(self, store):
         for i in range(5):
             store.insert_worker(

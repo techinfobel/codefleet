@@ -68,6 +68,8 @@ class WorkerRecord(BaseModel):
     created_at: float
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
+    last_heartbeat_at: Optional[float] = None
+    last_activity_at: Optional[float] = None
     timeout_seconds: int = Field(gt=0)
     pid: Optional[int] = None
     exit_code: Optional[int] = None
@@ -83,6 +85,7 @@ class WorkerRecord(BaseModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     error_message: Optional[str] = None
+    heartbeat_message: Optional[str] = None
     workflow_id: Optional[str] = None
     stage_index: Optional[int] = None
 
@@ -103,6 +106,8 @@ class WorkerStatusPayload(BaseModel):
     created_at: float
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
+    last_heartbeat_at: Optional[float] = None
+    last_activity_at: Optional[float] = None
     timeout_seconds: int
     pid: Optional[int] = None
     exit_code: Optional[int] = None
@@ -110,6 +115,7 @@ class WorkerStatusPayload(BaseModel):
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     error_message: Optional[str] = None
+    heartbeat_message: Optional[str] = None
     prompt_path: str
     result_json_path: str
     stdout_path: str

@@ -50,6 +50,7 @@ DEFAULT_RATE_LIMIT_BASE_DELAY = 4.0
 DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
 DEFAULT_STALE_TIMEOUT = 180.0  # 3 minutes
 DEFAULT_STALE_MAX_RESTARTS = 2
+DEFAULT_HEARTBEAT_INTERVAL = 30.0
 
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
@@ -88,6 +89,7 @@ class FleetSupervisor:
         rate_limit_max_delay: float = DEFAULT_RATE_LIMIT_MAX_DELAY,
         stale_timeout: float = DEFAULT_STALE_TIMEOUT,
         stale_max_restarts: int = DEFAULT_STALE_MAX_RESTARTS,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL,
     ):
         if default_timeout <= 0:
             raise ValueError(f"default_timeout must be positive, got {default_timeout}")
@@ -117,6 +119,7 @@ class FleetSupervisor:
         self.rate_limit_max_delay = rate_limit_max_delay
         self.stale_timeout = stale_timeout
         self.stale_max_restarts = stale_max_restarts
+        self.heartbeat_interval = heartbeat_interval
 
         self._active_workers: dict[str, WorkerProcess] = {}
         self._workflow_engine = None
@@ -164,6 +167,7 @@ class FleetSupervisor:
             "default_claude_model": self.default_claude_model,
             "default_executor": self.default_executor.value,
             "max_spawn_depth": self.max_spawn_depth,
+            "heartbeat_interval": self.heartbeat_interval,
         }
 
     def create_worker(
@@ -315,6 +319,8 @@ class FleetSupervisor:
             profile=profile,
             status=WorkerStatus.PENDING,
             created_at=now,
+            last_heartbeat_at=None,
+            last_activity_at=None,
             timeout_seconds=timeout_seconds,
             command_json=json.dumps(cmd),
             prompt=prompt,
@@ -327,6 +333,7 @@ class FleetSupervisor:
             parent_worker_id=parent_worker_id,
             tags=tags or [],
             metadata=metadata or {},
+            heartbeat_message=None,
             workflow_id=workflow_id,
             stage_index=stage_index,
         )
@@ -349,11 +356,13 @@ class FleetSupervisor:
                 stderr_path=stderr_path,
                 timeout_seconds=timeout_seconds,
                 on_complete=self._on_worker_complete,
+                on_heartbeat=self._on_worker_heartbeat,
                 max_retries=self.rate_limit_max_retries,
                 retry_base_delay=self.rate_limit_base_delay,
                 retry_max_delay=self.rate_limit_max_delay,
                 stale_timeout=self.stale_timeout,
                 stale_max_restarts=self.stale_max_restarts,
+                heartbeat_interval=self.heartbeat_interval,
             )
             pid = worker_proc.start()
         except Exception:
@@ -369,6 +378,9 @@ class FleetSupervisor:
             worker_id,
             status=WorkerStatus.RUNNING,
             started_at=time.time(),
+            last_heartbeat_at=time.time(),
+            last_activity_at=time.time(),
+            heartbeat_message="Worker launching",
             pid=pid,
         )
 
@@ -511,7 +523,11 @@ class FleetSupervisor:
             return
 
         now = time.time()
-        update: dict = {"ended_at": now, "exit_code": exit_code}
+        update: dict = {
+            "ended_at": now,
+            "exit_code": exit_code,
+            "last_heartbeat_at": now,
+        }
 
         # Persist retry count from the process
         proc = self._active_workers.get(worker_id)
@@ -521,9 +537,13 @@ class FleetSupervisor:
         if error and "timed out" in error.lower():
             update["status"] = WorkerStatus.TIMED_OUT
             update["error_message"] = error
+            update["heartbeat_message"] = error
         elif exit_code != 0:
             update["status"] = WorkerStatus.FAILED
             update["error_message"] = error or f"Process exited with code {exit_code}"
+            update["heartbeat_message"] = (
+                error or f"Process exited with code {exit_code}"
+            )
         else:
             result_path = Path(record.result_json_path)
             try:
@@ -535,11 +555,14 @@ class FleetSupervisor:
                         f"Result file invalid ({e}), but changes detected "
                         f"in worktree. Salvaged result written."
                     )
+                    update["heartbeat_message"] = "Worker completed with salvaged result"
                 else:
                     update["status"] = WorkerStatus.FAILED
                     update["error_message"] = f"Result validation failed: {e}"
+                    update["heartbeat_message"] = f"Result validation failed: {e}"
             else:
                 update["status"] = WorkerStatus.SUCCEEDED
+                update["heartbeat_message"] = "Worker completed successfully"
 
         record = self.store.update_worker(worker_id, **update)
 
@@ -569,7 +592,14 @@ class FleetSupervisor:
                     logger.exception(
                         "Failed to mark workflow %s as failed after callback error",
                         record.workflow_id,
-                    )
+                )
+
+    def _on_worker_heartbeat(self, worker_id: str, payload: dict) -> None:
+        """Persist liveness information from the worker monitor."""
+        record = self.store.get_worker(worker_id)
+        if record is None or record.status.is_terminal:
+            return
+        self.store.update_worker(worker_id, **payload)
 
     def get_worker_status(self, worker_id: str) -> WorkerStatusPayload:
         record = self.store.get_worker(worker_id)

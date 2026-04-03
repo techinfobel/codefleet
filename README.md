@@ -235,16 +235,18 @@ Literal curly braces in prompts (JSON examples, code snippets) are safe — only
 | `FLEET_RATE_LIMIT_MAX_DELAY` | `60.0` | Maximum backoff delay cap in seconds |
 | `FLEET_STALE_TIMEOUT` | `120` | Seconds of no output before a worker is considered stale and restarted |
 | `FLEET_STALE_MAX_RESTARTS` | `2` | Max stale restarts before giving up |
+| `FLEET_HEARTBEAT_INTERVAL` | `30` | Seconds between persisted liveness heartbeats for running workers |
 
 ## How It Works
 
 1. **Isolation** — each worker gets its own git worktree and branch (`{executor}/{task}/{id}`)
 2. **Stale detection** — monitors stdout/stderr activity; restarts workers that go silent for 2 minutes (preserving worktree state)
 3. **Rate-limit retry** — automatically retries on 429 errors with exponential backoff (4s, 8s, 16s)
-4. **Structured output** — every agent writes a `result.json` with summary, files changed, test results, and next steps
-5. **Structured progress** — status responses include elapsed times, progress bars, and per-stage summaries
-6. **Durability** — all state lives in SQLite (WAL mode), survives crashes and restarts
-7. **Concurrency control** — configurable limits on concurrent workers and spawn depth
+4. **Heartbeat tracking** — running workers persist heartbeat and last-activity timestamps so stalled monitors are easier to diagnose
+5. **Structured output** — every agent writes a `result.json` with summary, files changed, test results, and next steps
+6. **Structured progress** — status responses include elapsed times, progress bars, and per-stage summaries
+7. **Durability** — all state lives in SQLite (WAL mode), survives crashes and restarts
+8. **Concurrency control** — configurable limits on concurrent workers and spawn depth
 
 ## Development
 

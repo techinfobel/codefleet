@@ -190,6 +190,57 @@ class TestCreateWorkerIntegration:
         assert status.status == WorkerStatus.FAILED
         assert "Result validation failed" in (status.error_message or "")
 
+    def test_running_worker_persists_heartbeat(self, tmp_path, git_repo):
+        """A running worker updates heartbeat fields before it completes."""
+        base_dir = tmp_path / "fleet-heartbeat"
+        supervisor = FleetSupervisor(
+            base_dir=base_dir,
+            allowed_repos=[str(git_repo)],
+            default_model="gpt-5.4",
+            default_timeout=30,
+            max_concurrent=1,
+            heartbeat_interval=1.0,
+            stale_timeout=0,
+        )
+        script = (
+            "import json, time; "
+            "time.sleep(2.5); "
+            "json.dump("
+            '{"summary":"done","status":"completed","files_changed":[],"tests":[]}, '
+            "open('__RESULT_PATH__', 'w'))"
+        )
+        try:
+            payload = self._create_worker_with_script(
+                supervisor, git_repo, script, task_name="heartbeat"
+            )
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                status = supervisor.get_worker_status(payload.worker_id)
+                if (
+                    status.last_heartbeat_at is not None
+                    and status.heartbeat_message
+                    and "running" in status.heartbeat_message.lower()
+                ):
+                    break
+                time.sleep(0.2)
+
+            status = supervisor.get_worker_status(payload.worker_id)
+            assert status.last_heartbeat_at is not None
+            assert status.last_activity_at is not None
+            assert status.heartbeat_message is not None
+
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                status = supervisor.get_worker_status(payload.worker_id)
+                if status.status.is_terminal:
+                    break
+                time.sleep(0.2)
+
+            assert status.status == WorkerStatus.SUCCEEDED
+        finally:
+            supervisor.close()
+
     def test_failed_worker_nonzero_exit(self, supervisor, git_repo):
         """Worker that exits non-zero should fail."""
         script = "import sys; sys.exit(42)"

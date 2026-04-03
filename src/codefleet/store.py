@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS workers (
     created_at REAL NOT NULL,
     started_at REAL,
     ended_at REAL,
+    last_heartbeat_at REAL,
+    last_activity_at REAL,
     timeout_seconds INTEGER NOT NULL,
     pid INTEGER,
     exit_code INTEGER,
@@ -46,7 +48,8 @@ CREATE TABLE IF NOT EXISTS workers (
     parent_worker_id TEXT,
     tags_json TEXT NOT NULL DEFAULT '[]',
     metadata_json TEXT NOT NULL DEFAULT '{}',
-    error_message TEXT
+    error_message TEXT,
+    heartbeat_message TEXT
 );
 """
 
@@ -78,18 +81,21 @@ _MIGRATIONS = [
     "ALTER TABLE workers ADD COLUMN workflow_id TEXT",
     "ALTER TABLE workers ADD COLUMN stage_index INTEGER",
     "ALTER TABLE workers RENAME COLUMN codex_command TO command_json",
+    "ALTER TABLE workers ADD COLUMN last_heartbeat_at REAL",
+    "ALTER TABLE workers ADD COLUMN last_activity_at REAL",
+    "ALTER TABLE workers ADD COLUMN heartbeat_message TEXT",
 ]
 
 _INSERT_SQL = """
 INSERT INTO workers (
     worker_id, task_name, repo_path, branch_name, worktree_path,
     worker_dir, model, profile, status, created_at, started_at,
-    ended_at, timeout_seconds, pid, exit_code, command_json,
+    ended_at, last_heartbeat_at, last_activity_at, timeout_seconds, pid, exit_code, command_json,
     prompt, result_json_path, stdout_path, stderr_path,
     prompt_path, meta_path, retry_count, parent_worker_id,
-    tags_json, metadata_json, error_message, executor,
+    tags_json, metadata_json, error_message, heartbeat_message, executor,
     workflow_id, stage_index
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _INSERT_WORKFLOW_SQL = """
@@ -156,6 +162,8 @@ class WorkerStore:
                     record.created_at,
                     record.started_at,
                     record.ended_at,
+                    record.last_heartbeat_at,
+                    record.last_activity_at,
                     record.timeout_seconds,
                     record.pid,
                     record.exit_code,
@@ -171,6 +179,7 @@ class WorkerStore:
                     json.dumps(record.tags),
                     json.dumps(record.metadata),
                     record.error_message,
+                    record.heartbeat_message,
                     record.executor.value,
                     record.workflow_id,
                     record.stage_index,

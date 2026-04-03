@@ -407,6 +407,51 @@ class TestWorkerProcess:
         assert "error" in completed
         assert "authentication required" in completed["error"].lower()
 
+    def test_emits_heartbeat_callback(self, tmp_path):
+        """The monitor emits heartbeat updates without touching child logs."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+        heartbeats = []
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        def on_heartbeat(wid, payload):
+            heartbeats.append((wid, payload))
+
+        script = "import time; time.sleep(2.5)"
+
+        wp = WorkerProcess(
+            worker_id="w_test_heartbeat",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=10,
+            on_complete=on_complete,
+            on_heartbeat=on_heartbeat,
+            stale_timeout=0,
+            heartbeat_interval=1.0,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 10
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert completed["exit_code"] == 0
+        assert len(heartbeats) >= 2
+        assert heartbeats[0][0] == "w_test_heartbeat"
+        assert heartbeats[0][1]["heartbeat_message"] == "Worker started"
+        assert any(
+            "Worker running; last output" in hb[1]["heartbeat_message"]
+            for hb in heartbeats[1:]
+        )
+
     def test_cancel(self, tmp_path):
         """Cancel a running subprocess."""
         stdout_path = tmp_path / "stdout.log"

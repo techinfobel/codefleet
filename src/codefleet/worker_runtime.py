@@ -240,11 +240,13 @@ class WorkerProcess:
         stderr_path: Path,
         timeout_seconds: int,
         on_complete: Optional[Callable[[str, int, Optional[str]], None]] = None,
+        on_heartbeat: Optional[Callable[[str, dict], None]] = None,
         max_retries: int = 0,
         retry_base_delay: float = 4.0,
         retry_max_delay: float = 60.0,
         stale_timeout: float = 120.0,
         stale_max_restarts: int = 2,
+        heartbeat_interval: float = 30.0,
     ):
         self.worker_id = worker_id
         self.command = command
@@ -253,11 +255,13 @@ class WorkerProcess:
         self.stderr_path = stderr_path
         self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
+        self.on_heartbeat = on_heartbeat
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
         self.stale_timeout = stale_timeout
         self.stale_max_restarts = stale_max_restarts
+        self.heartbeat_interval = heartbeat_interval
         self._process: Optional[subprocess.Popen] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._retry_count = 0
@@ -352,6 +356,33 @@ class WorkerProcess:
         )
         return stdout_f, stderr_f
 
+    def _emit_heartbeat(
+        self,
+        *,
+        now_wall: float,
+        last_activity_wall: float,
+        message: str,
+    ) -> None:
+        """Report worker liveness without writing into child stdout/stderr."""
+        if self.on_heartbeat is None:
+            return
+        try:
+            self.on_heartbeat(
+                self.worker_id,
+                {
+                    "last_heartbeat_at": now_wall,
+                    "last_activity_at": last_activity_wall,
+                    "heartbeat_message": message,
+                    "retry_count": self._retry_count,
+                },
+            )
+        except Exception:
+            logger.debug(
+                "Heartbeat callback failed for worker %s",
+                self.worker_id,
+                exc_info=True,
+            )
+
     def _monitor(self, stdout_f, stderr_f):
         """Monitor the process for completion, stale detection, or rate-limit retry."""
         exit_code = -1
@@ -359,6 +390,14 @@ class WorkerProcess:
         last_output_size = self._output_size()
         last_activity = time.monotonic()
         started_at = time.monotonic()
+        started_wall = time.time()
+        last_activity_wall = started_wall
+        last_heartbeat = started_at
+        self._emit_heartbeat(
+            now_wall=started_wall,
+            last_activity_wall=last_activity_wall,
+            message="Worker started",
+        )
         try:
             while True:
                 try:
@@ -408,6 +447,15 @@ class WorkerProcess:
                             )
                             last_output_size = self._output_size()
                             last_activity = time.monotonic()
+                            last_activity_wall = time.time()
+                            self._emit_heartbeat(
+                                now_wall=last_activity_wall,
+                                last_activity_wall=last_activity_wall,
+                                message=(
+                                    f"Retrying after rate limit "
+                                    f"({self._retry_count}/{self.max_retries})"
+                                ),
+                            )
                             continue
 
                     return
@@ -415,6 +463,7 @@ class WorkerProcess:
                     # Check for activity (output growth)
                     current_size = self._output_size()
                     now = time.monotonic()
+                    now_wall = time.time()
                     if now - started_at >= self.timeout_seconds:
                         self._terminate()
                         error = f"Worker timed out after {self.timeout_seconds}s"
@@ -422,6 +471,7 @@ class WorkerProcess:
                     if current_size != last_output_size:
                         last_output_size = current_size
                         last_activity = now
+                        last_activity_wall = now_wall
                     if self._detect_auth_required():
                         self._terminate()
                         error = (
@@ -455,6 +505,15 @@ class WorkerProcess:
                             )
                             last_output_size = self._output_size()
                             last_activity = time.monotonic()
+                            last_activity_wall = time.time()
+                            self._emit_heartbeat(
+                                now_wall=last_activity_wall,
+                                last_activity_wall=last_activity_wall,
+                                message=(
+                                    f"Restarted after stale detection "
+                                    f"({self._stale_restarts}/{self.stale_max_restarts})"
+                                ),
+                            )
                         else:
                             self._terminate()
                             error = (
@@ -462,6 +521,19 @@ class WorkerProcess:
                                 f"(no output for {int(now - last_activity)}s)"
                             )
                             return
+                    if (
+                        self.heartbeat_interval > 0
+                        and now - last_heartbeat >= self.heartbeat_interval
+                    ):
+                        silence_seconds = int(max(0.0, now - last_activity))
+                        self._emit_heartbeat(
+                            now_wall=now_wall,
+                            last_activity_wall=last_activity_wall,
+                            message=(
+                                f"Worker running; last output {silence_seconds}s ago"
+                            ),
+                        )
+                        last_heartbeat = now
         except Exception as e:
             error = f"Monitor error: {e}"
         finally:

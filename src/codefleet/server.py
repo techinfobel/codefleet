@@ -54,6 +54,14 @@ def _enrich_worker(d: dict) -> dict:
     status = d.get("status", "")
     elapsed = _worker_elapsed(d)
     d["elapsed"] = _fmt_duration(elapsed)
+    heartbeat_at = d.get("last_heartbeat_at")
+    activity_at = d.get("last_activity_at")
+    d["heartbeat_age"] = _fmt_duration(
+        _time.time() - heartbeat_at if heartbeat_at else None
+    )
+    d["last_output_age"] = _fmt_duration(
+        _time.time() - activity_at if activity_at else None
+    )
     d["status_label"] = f"[{_STATUS_LABELS.get(status, status.upper())}]"
     task = d.get("task_name", "")
     executor = d.get("executor", "")
@@ -186,6 +194,7 @@ def _default_supervisor() -> FleetSupervisor:
         rate_limit_max_delay=float(os.environ.get("FLEET_RATE_LIMIT_MAX_DELAY", "60.0")),
         stale_timeout=float(os.environ.get("FLEET_STALE_TIMEOUT", "180")),
         stale_max_restarts=int(os.environ.get("FLEET_STALE_MAX_RESTARTS", "2")),
+        heartbeat_interval=float(os.environ.get("FLEET_HEARTBEAT_INTERVAL", "30")),
     )
 
 
