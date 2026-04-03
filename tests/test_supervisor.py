@@ -1,6 +1,7 @@
 """Tests for supervisor.py - integration tests with real git, SQLite, and subprocesses."""
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -8,7 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from codefleet.models import ExecutorType, WorkerStatus, WorkerStatusPayload
+from codefleet.models import ExecutorType, WorkerRecord, WorkerStatus, WorkerStatusPayload
+from codefleet.store import WorkerStore
 from codefleet.supervisor import (
     FleetSupervisor,
     _sanitize_task_name,
@@ -70,6 +72,17 @@ class TestHealthcheck:
             "claude-opus-4-6",
             "claude-sonnet-4-6",
         ]
+
+    def test_healthcheck_includes_versions_and_auth_fields(self, supervisor):
+        result = supervisor.healthcheck()
+        assert "codex_version" in result
+        assert "gemini_version" in result
+        assert "claude_version" in result
+        assert "codex_auth_status" in result
+        assert "gemini_auth_status" in result
+        assert "claude_auth_status" in result
+        assert result["auth_check_mode"] == "local_artifact"
+        assert "claude_auth_note" in result
 
 
 class TestCreateWorkerValidation:
@@ -296,6 +309,65 @@ class TestCreateWorkerIntegration:
         status = supervisor.get_worker_status(payload.worker_id)
         assert status.status == WorkerStatus.FAILED
         assert "Result validation failed" in (status.error_message or "")
+
+    @pytest.mark.parametrize("executor", ["gemini", "claude"])
+    def test_executor_stdout_result_materialized(self, supervisor, git_repo, executor):
+        """Gemini and Claude should succeed without writing result.json directly."""
+        payload_json = json.dumps(
+            {
+                "summary": f"{executor} ok",
+                "files_changed": ["src/app.py"],
+                "tests": [],
+                "commits": [],
+                "next_steps": ["review"],
+                "status": "completed",
+            }
+        )
+        if executor == "gemini":
+            script = (
+                "import json; "
+                "print('Loaded cached credentials.', flush=True); "
+                f"payload = {payload_json!r}; "
+                "print(json.dumps({"
+                "'type': 'message', 'role': 'assistant', 'content': payload"
+                "}), flush=True)"
+            )
+        else:
+            script = (
+                "import json; "
+                f"payload = {payload_json!r}; "
+                "print(json.dumps({"
+                "'type': 'assistant', "
+                "'message': {'content': [{'type': 'text', 'text': payload}]}"
+                "}), flush=True); "
+                "print(json.dumps({'type': 'result', 'result': payload}), flush=True)"
+            )
+
+        with patch("codefleet.supervisor.build_worker_command") as mock_build:
+            mock_build.return_value = [sys.executable, "-c", script]
+            worker = supervisor.create_worker(
+                repo_path=str(git_repo),
+                task_name=f"{executor}-stdout-result",
+                prompt="Return final JSON in stdout",
+                executor=executor,
+            )
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = supervisor.get_worker_status(worker.worker_id)
+            if status.status.is_terminal:
+                break
+            time.sleep(0.2)
+
+        status = supervisor.get_worker_status(worker.worker_id)
+        assert status.status == WorkerStatus.SUCCEEDED
+        assert status.heartbeat_message == (
+            "Worker completed successfully via parsed stdout result"
+        )
+
+        result = supervisor.collect_worker_result(worker.worker_id)
+        assert result["result"]["summary"] == f"{executor} ok"
+        assert result["result"]["status"] == "completed"
 
 
 class TestCancelWorker:
@@ -677,6 +749,180 @@ class TestStatePersistence:
         assert status.status == WorkerStatus.SUCCEEDED
         assert status.task_name == "persistence test"
         sup2.close()
+
+    def test_recover_orphaned_worker_from_stdout_result(self, tmp_path, git_repo):
+        """A previously running Gemini worker should recover from stdout on restart."""
+        base_dir = tmp_path / "fleet_recover_stdout"
+        worker_id = "w_recover_stdout"
+        worker_dir = base_dir / "workers" / worker_id
+        worktree = worker_dir / "worktree"
+        codefleet_dir = worktree / ".codefleet"
+        codefleet_dir.mkdir(parents=True, exist_ok=True)
+
+        stdout_path = worker_dir / "stdout.log"
+        stderr_path = worker_dir / "stderr.log"
+        prompt_path = codefleet_dir / "prompt.txt"
+        result_path = codefleet_dir / "result.json"
+        meta_path = worker_dir / "meta.json"
+
+        prompt_path.write_text("Recover me", encoding="utf-8")
+        meta_path.write_text("{}", encoding="utf-8")
+        stdout_path.write_text(
+            '{"type":"message","role":"assistant","content":"'
+            '{\\"summary\\":\\"recovered\\",\\"files_changed\\":[\\"a.py\\"],'
+            '\\"tests\\":[],\\"commits\\":[],\\"next_steps\\":[\\"ship\\"],'
+            '\\"status\\":\\"completed\\"}"}\n',
+            encoding="utf-8",
+        )
+        stderr_path.write_text("", encoding="utf-8")
+
+        store = WorkerStore(base_dir / "fleet.db")
+        try:
+            store.insert_worker(
+                WorkerRecord(
+                    worker_id=worker_id,
+                    task_name="recover stdout",
+                    repo_path=str(git_repo),
+                    branch_name=f"gemini/recover/{worker_id}",
+                    worktree_path=str(worktree),
+                    worker_dir=str(worker_dir),
+                    model="gemini-3.1-pro-preview",
+                    executor=ExecutorType.GEMINI,
+                    status=WorkerStatus.RUNNING,
+                    created_at=time.time() - 15,
+                    started_at=time.time() - 10,
+                    last_activity_at=time.time() - 5,
+                    timeout_seconds=60,
+                    pid=999999,
+                    command_json='["gemini", "-p", "test"]',
+                    prompt="Recover me",
+                    result_json_path=str(result_path),
+                    stdout_path=str(stdout_path),
+                    stderr_path=str(stderr_path),
+                    prompt_path=str(prompt_path),
+                    meta_path=str(meta_path),
+                )
+            )
+        finally:
+            store.close()
+
+        sup = FleetSupervisor(
+            base_dir=base_dir,
+            allowed_repos=[str(git_repo)],
+            default_timeout=60,
+        )
+        try:
+            status = sup.get_worker_status(worker_id)
+            assert status.status == WorkerStatus.SUCCEEDED
+            assert status.heartbeat_message == (
+                "Recovered completed worker after supervisor restart via parsed stdout result"
+            )
+            assert result_path.exists()
+
+            result = sup.collect_worker_result(worker_id)
+            assert result["result"]["summary"] == "recovered"
+            assert result["result"]["status"] == "completed"
+        finally:
+            sup.close()
+
+    def test_recover_running_worker_monitor_after_restart(self, tmp_path, git_repo):
+        """A live worker PID should be reattached and complete under the new supervisor."""
+        base_dir = tmp_path / "fleet_recover_live"
+        worker_id = "w_recover_live"
+        worker_dir = base_dir / "workers" / worker_id
+        worktree = worker_dir / "worktree"
+        codefleet_dir = worktree / ".codefleet"
+        codefleet_dir.mkdir(parents=True, exist_ok=True)
+
+        stdout_path = worker_dir / "stdout.log"
+        stderr_path = worker_dir / "stderr.log"
+        prompt_path = codefleet_dir / "prompt.txt"
+        result_path = codefleet_dir / "result.json"
+        meta_path = worker_dir / "meta.json"
+
+        prompt_path.write_text("Recover live worker", encoding="utf-8")
+        meta_path.write_text("{}", encoding="utf-8")
+
+        script = (
+            "import json, time; "
+            "print('still running', flush=True); "
+            f"time.sleep(2); json.dump({{'summary':'done','files_changed':[],"
+            f"'tests':[],'commits':[],'next_steps':[],'status':'completed'}}, "
+            f"open({str(result_path)!r}, 'w'))"
+        )
+        stdout_file = stdout_path.open("w")
+        stderr_file = stderr_path.open("w")
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            cwd=str(worktree),
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
+        stdout_file.close()
+        stderr_file.close()
+
+        store = WorkerStore(base_dir / "fleet.db")
+        try:
+            store.insert_worker(
+                WorkerRecord(
+                    worker_id=worker_id,
+                    task_name="recover live",
+                    repo_path=str(git_repo),
+                    branch_name=f"codex/recover/{worker_id}",
+                    worktree_path=str(worktree),
+                    worker_dir=str(worker_dir),
+                    model="gpt-5.4",
+                    executor=ExecutorType.CODEX,
+                    status=WorkerStatus.RUNNING,
+                    created_at=time.time() - 5,
+                    started_at=time.time() - 5,
+                    last_activity_at=time.time() - 5,
+                    timeout_seconds=60,
+                    pid=proc.pid,
+                    command_json=json.dumps([sys.executable, "-c", script]),
+                    prompt="Recover live worker",
+                    result_json_path=str(result_path),
+                    stdout_path=str(stdout_path),
+                    stderr_path=str(stderr_path),
+                    prompt_path=str(prompt_path),
+                    meta_path=str(meta_path),
+                )
+            )
+        finally:
+            store.close()
+
+        sup = FleetSupervisor(
+            base_dir=base_dir,
+            allowed_repos=[str(git_repo)],
+            default_timeout=60,
+            heartbeat_interval=0.5,
+            stale_timeout=0,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            recovered = False
+            reaped = False
+            while time.monotonic() < deadline:
+                status = sup.get_worker_status(worker_id)
+                if status.heartbeat_message == "Recovered worker monitor after supervisor restart":
+                    recovered = True
+                if not reaped and proc.poll() is not None:
+                    proc.wait(timeout=5)
+                    reaped = True
+                if status.status.is_terminal:
+                    break
+                time.sleep(0.2)
+
+            status = sup.get_worker_status(worker_id)
+            assert recovered
+            assert status.status == WorkerStatus.SUCCEEDED
+            assert sup.collect_worker_result(worker_id)["result"]["summary"] == "done"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            sup.close()
 
 
 class TestSpawnDepth:

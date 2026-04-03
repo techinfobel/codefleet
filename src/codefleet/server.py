@@ -5,7 +5,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from .models import SupportedModel
+from .models import StageDefinition, SupportedModel
 from .supervisor import FleetSupervisor
 
 logger = logging.getLogger(__name__)
@@ -420,7 +420,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         name: str,
         repo_path: str,
         task_prompt: str,
-        stages: list[dict],
+        stages: list[StageDefinition],
         base_ref: str = "HEAD",
         timeout_seconds: Optional[int] = None,
     ) -> dict:

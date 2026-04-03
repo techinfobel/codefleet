@@ -11,12 +11,12 @@ from typing import Optional
 
 from .models import (
     ExecutorType,
-    SupportedModel,
     WorkerRecord,
     WorkerStatus,
     WorkerStatusPayload,
     WorkflowStatus,
     parse_result_file,
+    supported_models_for_executor,
 )
 from .store import WorkerStore
 from .git_ops import (
@@ -33,6 +33,7 @@ from .worker_runtime import (
     get_codex_path,
     get_gemini_path,
     get_claude_path,
+    materialize_result_from_stdout,
     write_result_schema,
 )
 
@@ -52,15 +53,6 @@ DEFAULT_RATE_LIMIT_MAX_DELAY = 60.0
 DEFAULT_STALE_TIMEOUT = 180.0  # 3 minutes
 DEFAULT_STALE_MAX_RESTARTS = 2
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
-
-_SUPPORTED_MODELS = {
-    ExecutorType.CODEX: (SupportedModel.GPT_5_4.value,),
-    ExecutorType.GEMINI: (SupportedModel.GEMINI_3_1_PRO_PREVIEW.value,),
-    ExecutorType.CLAUDE: (
-        SupportedModel.CLAUDE_OPUS_4_6.value,
-        SupportedModel.CLAUDE_SONNET_4_6.value,
-    ),
-}
 
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
@@ -133,6 +125,7 @@ class FleetSupervisor:
 
         self._active_workers: dict[str, WorkerProcess] = {}
         self._workflow_engine = None
+        self._recover_running_workers()
 
     @property
     def workflow_engine(self):
@@ -150,6 +143,35 @@ class FleetSupervisor:
             for allowed in self.allowed_repos
         )
 
+    @staticmethod
+    def _read_cli_version(command_name: str) -> str:
+        path = shutil.which(command_name)
+        if path is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [command_name, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            return ""
+
+        output = (result.stdout or result.stderr or "").strip()
+        if not output:
+            return ""
+        return output.splitlines()[0].strip()
+
+    @staticmethod
+    def _auth_status_from_artifact(path: Path) -> str:
+        try:
+            if path.exists() and path.is_file() and path.stat().st_size > 0:
+                return "configured"
+        except OSError:
+            pass
+        return "missing"
+
     def healthcheck(self) -> dict:
         from importlib.metadata import version
         try:
@@ -161,6 +183,16 @@ class FleetSupervisor:
             "gemini": get_gemini_path(),
             "claude": get_claude_path(),
         }
+        executor_versions = {
+            "codex": self._read_cli_version("codex"),
+            "gemini": self._read_cli_version("gemini"),
+            "claude": self._read_cli_version("claude"),
+        }
+        auth_status = {
+            "codex": self._auth_status_from_artifact(Path.home() / ".codex" / "auth.json"),
+            "gemini": self._auth_status_from_artifact(Path.home() / ".gemini" / "oauth_creds.json"),
+            "claude": "unknown",
+        }
         git_path = get_git_path()
         return {
             "ok": bool(any(executor_paths.values()) and git_path),
@@ -170,6 +202,13 @@ class FleetSupervisor:
             "base_dir": str(self.base_dir),
             **{f"{name}_found": path is not None for name, path in executor_paths.items()},
             **{f"{name}_path": path or "" for name, path in executor_paths.items()},
+            **{f"{name}_version": executor_versions[name] for name in executor_versions},
+            **{f"{name}_auth_status": auth_status[name] for name in auth_status},
+            "auth_check_mode": "local_artifact",
+            "claude_auth_note": (
+                "Claude CLI login does not expose a reliable local auth artifact; "
+                "use the live Claude smoke test for end-to-end verification."
+            ),
             "git_found": git_path is not None,
             "git_path": git_path or "",
             "default_model": self.default_model,
@@ -179,8 +218,8 @@ class FleetSupervisor:
             "max_spawn_depth": self.max_spawn_depth,
             "heartbeat_interval": self.heartbeat_interval,
             "supported_models": {
-                executor.value: list(models)
-                for executor, models in _SUPPORTED_MODELS.items()
+                executor.value: list(supported_models_for_executor(executor))
+                for executor in ExecutorType
             },
         }
 
@@ -241,7 +280,7 @@ class FleetSupervisor:
         else:
             model = str(model)
 
-        allowed_models = _SUPPORTED_MODELS[executor_type]
+        allowed_models = supported_models_for_executor(executor_type)
         if model not in allowed_models:
             raise ValueError(
                 f"Unsupported model '{model}' for executor '{executor_type.value}'. "
@@ -380,6 +419,8 @@ class FleetSupervisor:
                 timeout_seconds=timeout_seconds,
                 on_complete=self._on_worker_complete,
                 on_heartbeat=self._on_worker_heartbeat,
+                started_at_wall=now,
+                last_activity_wall=now,
                 max_retries=self.rate_limit_max_retries,
                 retry_base_delay=self.rate_limit_base_delay,
                 retry_max_delay=self.rate_limit_max_delay,
@@ -408,6 +449,97 @@ class FleetSupervisor:
         )
 
         return WorkerStatusPayload.from_record(record)
+
+    def _recover_running_workers(self) -> None:
+        """Reattach monitors to workers that were running before restart."""
+        try:
+            running_workers = self.store.list_workers(statuses=["running"], limit=10000)
+        except Exception:
+            logger.exception("Failed to load running workers during supervisor recovery")
+            return
+
+        for record in running_workers:
+            try:
+                self._recover_running_worker(record)
+            except Exception:
+                logger.exception(
+                    "Failed to recover running worker %s during supervisor startup",
+                    record.worker_id,
+                )
+
+    def _recover_running_worker(self, record: WorkerRecord) -> None:
+        if record.pid and WorkerProcess.pid_exists(record.pid):
+            cmd = json.loads(record.command_json)
+            worker_proc = WorkerProcess(
+                worker_id=record.worker_id,
+                command=cmd,
+                cwd=Path(record.worktree_path),
+                stdout_path=Path(record.stdout_path),
+                stderr_path=Path(record.stderr_path),
+                timeout_seconds=record.timeout_seconds,
+                on_complete=self._on_worker_complete,
+                on_heartbeat=self._on_worker_heartbeat,
+                started_at_wall=record.started_at,
+                last_activity_wall=record.last_activity_at,
+                max_retries=self.rate_limit_max_retries,
+                retry_base_delay=self.rate_limit_base_delay,
+                retry_max_delay=self.rate_limit_max_delay,
+                stale_timeout=self.stale_timeout,
+                stale_max_restarts=self.stale_max_restarts,
+                heartbeat_interval=self.heartbeat_interval,
+            )
+            worker_proc.attach(record.pid)
+            self._active_workers[record.worker_id] = worker_proc
+            self.store.update_worker(
+                record.worker_id,
+                last_heartbeat_at=time.time(),
+                heartbeat_message="Recovered worker monitor after supervisor restart",
+            )
+            return
+
+        self._finalize_orphaned_running_worker(record)
+
+    def _finalize_orphaned_running_worker(self, record: WorkerRecord) -> None:
+        """Reconcile a worker left running in the DB with no live process."""
+        now = time.time()
+        update: dict = {
+            "ended_at": now,
+            "last_heartbeat_at": now,
+        }
+        result_path = Path(record.result_json_path)
+
+        try:
+            parse_result_file(result_path)
+        except (FileNotFoundError, ValueError) as e:
+            recovery_mode = self._materialize_or_salvage_result(record, e)
+            if recovery_mode == "materialized":
+                update["status"] = WorkerStatus.SUCCEEDED
+                update["heartbeat_message"] = (
+                    "Recovered completed worker after supervisor restart via parsed stdout result"
+                )
+                update["error_message"] = None
+            elif recovery_mode == "salvaged":
+                update["status"] = WorkerStatus.SUCCEEDED
+                update["heartbeat_message"] = (
+                    "Recovered completed worker after supervisor restart via worktree salvage"
+                )
+                update["error_message"] = (
+                    f"Recovered terminal result by salvaging the worktree after supervisor restart: {e}"
+                )
+            else:
+                update["status"] = WorkerStatus.FAILED
+                update["error_message"] = (
+                    "Worker was marked running before supervisor restart, "
+                    "but no live process or valid result was found."
+                )
+                update["heartbeat_message"] = update["error_message"]
+        else:
+            update["status"] = WorkerStatus.SUCCEEDED
+            update["heartbeat_message"] = (
+                "Recovered completed worker after supervisor restart"
+            )
+
+        self.store.update_worker(record.worker_id, **update)
 
     def _cleanup_failed_creation(
         self, repo: Path, worktree_path: Path, branch_name: str, worker_dir: Path
@@ -572,13 +704,22 @@ class FleetSupervisor:
             try:
                 parse_result_file(result_path)
             except (FileNotFoundError, ValueError) as e:
-                if self._salvage_result(record):
+                recovery_mode = self._materialize_or_salvage_result(record, e)
+                if recovery_mode == "materialized":
+                    update["status"] = WorkerStatus.SUCCEEDED
+                    update["heartbeat_message"] = (
+                        "Worker completed successfully via parsed stdout result"
+                    )
+                    update["error_message"] = None
+                elif recovery_mode == "salvaged":
                     update["status"] = WorkerStatus.SUCCEEDED
                     update["error_message"] = (
                         f"Result file invalid ({e}), but changes detected "
                         f"in worktree. Salvaged result written."
                     )
-                    update["heartbeat_message"] = "Worker completed with salvaged result"
+                    update["heartbeat_message"] = (
+                        "Worker completed with salvaged result"
+                    )
                 else:
                     update["status"] = WorkerStatus.FAILED
                     update["error_message"] = f"Result validation failed: {e}"
@@ -623,6 +764,34 @@ class FleetSupervisor:
         if record is None or record.status.is_terminal:
             return
         self.store.update_worker(worker_id, **payload)
+
+    def _materialize_or_salvage_result(
+        self,
+        record: WorkerRecord,
+        original_error: Exception,
+    ) -> Optional[str]:
+        """Try executor-native stdout parsing before falling back to salvage."""
+        if record.executor in {ExecutorType.GEMINI, ExecutorType.CLAUDE}:
+            try:
+                materialize_result_from_stdout(
+                    executor=record.executor.value,
+                    stdout_path=Path(record.stdout_path),
+                    result_json_path=Path(record.result_json_path),
+                )
+                parse_result_file(Path(record.result_json_path))
+                return "materialized"
+            except Exception:
+                logger.info(
+                    "Could not materialize %s result for worker %s after %s",
+                    record.executor.value,
+                    record.worker_id,
+                    original_error,
+                    exc_info=True,
+                )
+
+        if self._salvage_result(record):
+            return "salvaged"
+        return None
 
     def get_worker_status(self, worker_id: str) -> WorkerStatusPayload:
         record = self.store.get_worker(worker_id)

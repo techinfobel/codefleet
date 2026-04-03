@@ -13,7 +13,9 @@ from codefleet.models import (
     ExecutorType,
     StageDefinition,
     StageState,
+    SupportedModel,
     WorkerStatus,
+    WorkerStatusPayload,
     WorkflowRecord,
     WorkflowStatus,
     WorkflowStatusPayload,
@@ -121,6 +123,54 @@ class TestStageSchemaValidation:
                     "worktree_strategy": "inherit", "depends_on": [],
                 }],
             )
+
+    def test_incompatible_stage_model_rejected(self):
+        with pytest.raises(Exception, match="Unsupported model 'gpt-5.4' for executor 'gemini'"):
+            StageDefinition.model_validate({
+                "name": "bad-model",
+                "executor": "gemini",
+                "prompt_template": "x",
+                "model": "gpt-5.4",
+            })
+
+    def test_stage_model_forwarded_to_create_worker_as_string(self, supervisor, git_repo):
+        payload = WorkerStatusPayload(
+            worker_id="w_stage_model",
+            task_name="wf/review",
+            status=WorkerStatus.RUNNING,
+            repo_path=str(git_repo),
+            branch_name="claude/review/w_stage_model",
+            worktree_path=str(git_repo),
+            worker_dir=str(git_repo / ".worker"),
+            model="claude-opus-4-6",
+            executor=ExecutorType.CLAUDE,
+            created_at=time.time(),
+            timeout_seconds=60,
+            prompt_path=str(git_repo / "prompt.txt"),
+            result_json_path=str(git_repo / "result.json"),
+            stdout_path=str(git_repo / "stdout.log"),
+            stderr_path=str(git_repo / "stderr.log"),
+            meta_path=str(git_repo / "meta.json"),
+        )
+
+        with patch.object(supervisor, "create_worker", return_value=payload) as mock_create:
+            WorkflowEngine(supervisor).create_workflow(
+                name="wf-stage-model",
+                repo_path=str(git_repo),
+                task_prompt="Review this",
+                stages=[
+                    {
+                        "name": "review",
+                        "executor": "claude",
+                        "model": SupportedModel.CLAUDE_OPUS_4_6.value,
+                        "prompt_template": "{task_prompt}",
+                        "worktree_strategy": "new",
+                        "depends_on": [],
+                    }
+                ],
+            )
+
+        assert mock_create.call_args.kwargs["model"] == "claude-opus-4-6"
 
 
 # ---------------------------------------------------------------------------

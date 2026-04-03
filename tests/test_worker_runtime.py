@@ -1,5 +1,6 @@
 """Tests for worker_runtime.py - real subprocess management."""
 
+import json
 import os
 import sys
 import time
@@ -16,6 +17,8 @@ from codefleet.worker_runtime import (
     get_codex_path,
     get_gemini_path,
     get_claude_path,
+    materialize_result_from_stdout,
+    parse_executor_result_from_stdout,
 )
 
 
@@ -223,6 +226,64 @@ class TestGetClaudePath:
     def test_returns_string_or_none(self):
         result = get_claude_path()
         assert result is None or isinstance(result, str)
+
+
+class TestStreamJsonParsing:
+    def test_parse_gemini_result_from_stdout(self, tmp_path):
+        stdout_path = tmp_path / "gemini.log"
+        stdout_path.write_text(
+            "YOLO mode is enabled. This is for testing only.\n"
+            "Loaded cached credentials.\n"
+            '{"type":"init","model":"gemini-3.1-pro-preview"}\n'
+            '{"type":"message","role":"assistant","content":"```json\\n'
+            '{\\"summary\\":\\"ok\\",\\"files_changed\\":[\\"a.py\\"],'
+            '\\"tests\\":[],\\"commits\\":[],\\"next_steps\\":[\\"ship\\"],'
+            '\\"status\\":\\"completed\\"}\\n```"}\n'
+            '{"type":"result","status":"success"}\n',
+            encoding="utf-8",
+        )
+
+        result = parse_executor_result_from_stdout("gemini", stdout_path)
+
+        assert result["summary"] == "ok"
+        assert result["files_changed"] == ["a.py"]
+        assert result["status"] == "completed"
+
+    def test_materialize_claude_result_from_stdout(self, tmp_path):
+        stdout_path = tmp_path / "claude.log"
+        result_path = tmp_path / "result.json"
+        payload = json.dumps(
+            {
+                "summary": "ok",
+                "files_changed": ["b.py"],
+                "tests": [],
+                "commits": [],
+                "next_steps": ["review"],
+                "status": "completed",
+            }
+        )
+        stdout_path.write_text(
+            '{"type":"system","subtype":"init","model":"claude-sonnet-4-6"}\n'
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": payload}],
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "result", "result": payload})
+            + "\n",
+            encoding="utf-8",
+        )
+
+        materialize_result_from_stdout("claude", stdout_path, result_path)
+
+        materialized = json.loads(result_path.read_text(encoding="utf-8"))
+        assert materialized["summary"] == "ok"
+        assert materialized["files_changed"] == ["b.py"]
+        assert materialized["status"] == "completed"
 
 
 class TestWorkerProcess:

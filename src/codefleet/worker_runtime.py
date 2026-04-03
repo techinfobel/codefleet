@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import signal
@@ -5,9 +6,8 @@ import shutil
 import subprocess
 import threading
 import time
-import json
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,22 +80,6 @@ def get_claude_path() -> str | None:
     return shutil.which("claude")
 
 
-def _result_instruction(prompt_path: Path, result_json_path: Path) -> str:
-    """Build the shared instruction string for any executor."""
-    return (
-        f"Read the task prompt from {prompt_path}. "
-        f"Work in the current directory (a git worktree). "
-        f"Do NOT commit or modify anything in the .codefleet/ directory. "
-        f"Run relevant tests where appropriate. "
-        f"Write a single JSON object to {result_json_path} with this schema: "
-        f'{{"summary": "string", "files_changed": ["path"], '
-        f'"tests": [{{"command": "string", "status": "passed|failed|not_run", '
-        f'"details": "string"}}], '
-        f'"commits": ["hash"], "next_steps": ["string"], '
-        f'"status": "completed|blocked"}}'
-    )
-
-
 def _codex_result_instruction(prompt_path: Path) -> str:
     """Build the Codex-specific instruction string."""
     return (
@@ -104,6 +88,23 @@ def _codex_result_instruction(prompt_path: Path) -> str:
         f"Do NOT commit or modify anything in the .codefleet/ directory. "
         f"Run relevant tests where appropriate. "
         f"Return a single JSON object as your final response matching the provided output schema. "
+        f"Do not wrap the JSON in markdown."
+    )
+
+
+def _stream_result_instruction(prompt_path: Path) -> str:
+    """Build the Gemini/Claude instruction string for JSON final responses."""
+    return (
+        f"Read the task prompt from {prompt_path}. "
+        f"Work in the current directory (a git worktree). "
+        f"Do NOT commit or modify anything in the .codefleet/ directory. "
+        f"Run relevant tests where appropriate. "
+        f"Return exactly one JSON object as your final response with this schema: "
+        f'{{"summary": "string", "files_changed": ["path"], '
+        f'"tests": [{{"command": "string", "status": "passed|failed|not_run", '
+        f'"details": "string"}}], '
+        f'"commits": ["hash"], "next_steps": ["string"], '
+        f'"status": "completed|blocked"}}. '
         f"Do not wrap the JSON in markdown."
     )
 
@@ -145,7 +146,7 @@ def build_gemini_command(
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the gemini CLI command."""
-    instruction = _result_instruction(prompt_path, result_json_path)
+    instruction = _stream_result_instruction(prompt_path)
 
     cmd = [
         "gemini", "-p", instruction,
@@ -168,7 +169,7 @@ def build_claude_command(
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the claude CLI command."""
-    instruction = _result_instruction(prompt_path, result_json_path)
+    instruction = _stream_result_instruction(prompt_path)
 
     cmd = [
         "claude", "-p", instruction,
@@ -219,6 +220,108 @@ def build_worker_command(
     )
 
 
+def _strip_json_fence(text: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    lines = stripped.splitlines()
+    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1] == "```":
+        return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+def _extract_json_object(text: str) -> dict:
+    candidates = [text.strip(), _strip_json_fence(text)]
+    stripped = _strip_json_fence(text)
+    if "{" in stripped and "}" in stripped:
+        candidates.append(stripped[stripped.find("{"): stripped.rfind("}") + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    raise ValueError("Could not extract a JSON object from executor output")
+
+
+def parse_executor_result_from_stdout(executor: str, stdout_path: Path) -> dict:
+    """Parse a final JSON result from Gemini/Claude stream-json stdout."""
+    if not stdout_path.exists():
+        raise FileNotFoundError(f"Worker stdout not found: {stdout_path}")
+
+    raw = stdout_path.read_text(encoding="utf-8", errors="replace")
+    if not raw.strip():
+        raise ValueError("Worker stdout is empty")
+
+    assistant_chunks: list[str] = []
+    assistant_messages: list[str] = []
+    result_messages: list[str] = []
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or not stripped.startswith("{"):
+            continue
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+
+        if executor == "gemini":
+            if payload.get("type") == "message" and payload.get("role") == "assistant":
+                content = payload.get("content")
+                if isinstance(content, str):
+                    if payload.get("delta"):
+                        assistant_chunks.append(content)
+                    else:
+                        assistant_messages.append(content)
+            continue
+
+        if executor == "claude":
+            if payload.get("type") == "result" and isinstance(payload.get("result"), str):
+                result_messages.append(payload["result"])
+            elif payload.get("type") == "assistant":
+                message = payload.get("message", {})
+                content = message.get("content", [])
+                if isinstance(content, list):
+                    text = "".join(
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    )
+                    if text:
+                        assistant_messages.append(text)
+            continue
+
+    if executor == "gemini":
+        candidate = assistant_messages[-1] if assistant_messages else "".join(assistant_chunks)
+    elif executor == "claude":
+        candidate = result_messages[-1] if result_messages else (
+            assistant_messages[-1] if assistant_messages else ""
+        )
+    else:
+        raise ValueError(f"Unsupported executor for stdout parsing: {executor}")
+
+    if not candidate:
+        raise ValueError(f"No assistant JSON result found in {executor} stdout")
+    return _extract_json_object(candidate)
+
+
+def materialize_result_from_stdout(
+    executor: str,
+    stdout_path: Path,
+    result_json_path: Path,
+) -> None:
+    """Write the parsed final executor JSON output to result.json."""
+    data = parse_executor_result_from_stdout(executor, stdout_path)
+    result_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 class WorkerProcess:
     """Manages a single worker subprocess with automatic rate-limit retry."""
 
@@ -250,6 +353,8 @@ class WorkerProcess:
         timeout_seconds: int,
         on_complete: Optional[Callable[[str, int, Optional[str]], None]] = None,
         on_heartbeat: Optional[Callable[[str, dict], None]] = None,
+        started_at_wall: Optional[float] = None,
+        last_activity_wall: Optional[float] = None,
         max_retries: int = 0,
         retry_base_delay: float = 4.0,
         retry_max_delay: float = 60.0,
@@ -265,6 +370,8 @@ class WorkerProcess:
         self.timeout_seconds = timeout_seconds
         self.on_complete = on_complete
         self.on_heartbeat = on_heartbeat
+        self.started_at_wall = started_at_wall
+        self.last_activity_wall = last_activity_wall
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.retry_max_delay = retry_max_delay
@@ -272,6 +379,7 @@ class WorkerProcess:
         self.stale_max_restarts = stale_max_restarts
         self.heartbeat_interval = heartbeat_interval
         self._process: Optional[subprocess.Popen] = None
+        self._attached_pid: Optional[int] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._retry_count = 0
         self._stale_restarts = 0
@@ -279,7 +387,9 @@ class WorkerProcess:
 
     @property
     def pid(self) -> Optional[int]:
-        return self._process.pid if self._process else None
+        if self._process is not None:
+            return self._process.pid
+        return self._attached_pid
 
     @property
     def retry_count(self) -> int:
@@ -298,6 +408,10 @@ class WorkerProcess:
                 stderr=stderr_f,
                 start_new_session=True,
             )
+            if self.started_at_wall is None:
+                self.started_at_wall = time.time()
+            if self.last_activity_wall is None:
+                self.last_activity_wall = self.started_at_wall
         except Exception:
             stdout_f.close()
             stderr_f.close()
@@ -311,6 +425,34 @@ class WorkerProcess:
         self._monitor_thread.start()
 
         return self._process.pid
+
+    @staticmethod
+    def pid_exists(pid: int) -> bool:
+        """Check whether a process currently exists."""
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def attach(self, pid: int) -> int:
+        """Attach monitoring to an already-running worker process by PID."""
+        self._attached_pid = pid
+        if self.started_at_wall is None:
+            self.started_at_wall = time.time()
+        if self.last_activity_wall is None:
+            self.last_activity_wall = self.started_at_wall
+        stdout_f = open(self.stdout_path, "a")
+        stderr_f = open(self.stderr_path, "a")
+        self._monitor_thread = threading.Thread(
+            target=self._monitor,
+            args=(stdout_f, stderr_f),
+            daemon=True,
+        )
+        self._monitor_thread.start()
+        return pid
 
     def _is_rate_limited(self) -> bool:
         """Check stderr for rate-limit indicators."""
@@ -356,6 +498,7 @@ class WorkerProcess:
             f.write(f"\n--- [codefleet] {reason} ---\n")
         stdout_f = open(self.stdout_path, "w")
         stderr_f = open(self.stderr_path, "a")
+        self._attached_pid = None
         self._process = subprocess.Popen(
             self.command,
             cwd=str(self.cwd),
@@ -363,6 +506,8 @@ class WorkerProcess:
             stderr=stderr_f,
             start_new_session=True,
         )
+        self.started_at_wall = time.time()
+        self.last_activity_wall = self.started_at_wall
         return stdout_f, stderr_f
 
     def _emit_heartbeat(
@@ -398,19 +543,23 @@ class WorkerProcess:
         error = None
         last_output_size = self._output_size()
         last_activity = time.monotonic()
-        started_at = time.monotonic()
-        started_wall = time.time()
-        last_activity_wall = started_wall
-        last_heartbeat = started_at
+        now_wall = time.time()
+        started_wall = self.started_at_wall or now_wall
+        last_activity_wall = self.last_activity_wall or started_wall
+        last_heartbeat = time.monotonic()
         self._emit_heartbeat(
-            now_wall=started_wall,
+            now_wall=now_wall,
             last_activity_wall=last_activity_wall,
-            message="Worker started",
+            message=(
+                "Recovered worker monitor after supervisor restart"
+                if self._attached_pid is not None
+                else "Worker started"
+            ),
         )
         try:
             while True:
                 try:
-                    exit_code = self._process.wait(timeout=1.0)
+                    exit_code = self._wait_for_exit(timeout=1.0)
 
                     # Check for rate limiting and retry
                     if (
@@ -473,7 +622,7 @@ class WorkerProcess:
                     current_size = self._output_size()
                     now = time.monotonic()
                     now_wall = time.time()
-                    if now - started_at >= self.timeout_seconds:
+                    if now_wall - started_wall >= self.timeout_seconds:
                         self._terminate()
                         error = f"Worker timed out after {self.timeout_seconds}s"
                         return
@@ -553,18 +702,28 @@ class WorkerProcess:
 
     def _terminate(self):
         """Terminate the process group."""
-        if self._process is None:
+        pid = self.pid
+        if pid is None:
             return
         try:
-            pgid = os.getpgid(self._process.pid)
+            pgid = os.getpgid(pid)
             os.killpg(pgid, signal.SIGTERM)
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(pgid, signal.SIGKILL)
-                self._process.wait(timeout=5)
+            if self._process is not None:
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(pgid, signal.SIGKILL)
+                    self._process.wait(timeout=5)
+            else:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and self.pid_exists(pid):
+                    time.sleep(0.1)
+                if self.pid_exists(pid):
+                    os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, OSError):
             pass
+        finally:
+            self._attached_pid = None
 
     def cancel(self):
         """Cancel the running worker (also interrupts retry backoff)."""
@@ -572,4 +731,23 @@ class WorkerProcess:
         self._terminate()
 
     def is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        if self._process is not None:
+            return self._process.poll() is None
+        if self._attached_pid is not None:
+            return self.pid_exists(self._attached_pid)
+        return False
+
+    def _wait_for_exit(self, timeout: float) -> int:
+        """Wait for either a managed or attached process to exit."""
+        if self._process is not None:
+            return self._process.wait(timeout=timeout)
+        if self._attached_pid is None:
+            return 0
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not self.pid_exists(self._attached_pid):
+                self._attached_pid = None
+                return 0
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        raise subprocess.TimeoutExpired(self.command, timeout)

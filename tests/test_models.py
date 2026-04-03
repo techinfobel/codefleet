@@ -18,6 +18,7 @@ from codefleet.models import (
     WorkflowStatus,
     WorkflowStatusPayload,
     WorktreeStrategy,
+    supported_models_for_executor,
 )
 
 
@@ -300,6 +301,16 @@ class TestSupportedModel:
         payload = WorkerStatusPayload.from_record(record)
         assert payload.executor == ExecutorType.GEMINI
 
+    def test_supported_models_for_executor(self):
+        assert supported_models_for_executor(ExecutorType.CODEX) == ("gpt-5.4",)
+        assert supported_models_for_executor(ExecutorType.GEMINI) == (
+            "gemini-3.1-pro-preview",
+        )
+        assert supported_models_for_executor(ExecutorType.CLAUDE) == (
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+        )
+
 
 class TestWorktreeStrategy:
     def test_values(self):
@@ -317,6 +328,24 @@ class TestWorkflowModels:
         assert sd.worktree_strategy == WorktreeStrategy.NEW
         assert sd.depends_on == []
         assert sd.model is None
+
+    def test_stage_definition_accepts_compatible_model(self):
+        sd = StageDefinition(
+            name="review",
+            executor=ExecutorType.CLAUDE,
+            prompt_template="{task_prompt}",
+            model=SupportedModel.CLAUDE_OPUS_4_6,
+        )
+        assert sd.model == SupportedModel.CLAUDE_OPUS_4_6
+
+    def test_stage_definition_rejects_incompatible_model(self):
+        with pytest.raises(Exception, match="Unsupported model 'gpt-5.4' for executor 'gemini'"):
+            StageDefinition(
+                name="bad",
+                executor=ExecutorType.GEMINI,
+                prompt_template="{task_prompt}",
+                model=SupportedModel.GPT_5_4,
+            )
 
     def test_workflow_status_values(self):
         assert WorkflowStatus.PENDING.value == "pending"

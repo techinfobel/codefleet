@@ -337,7 +337,7 @@ class WorkflowEngine:
             task_name=f"{record.name}/{stage_def.name}",
             prompt=rendered_prompt,
             base_ref=record.base_ref,
-            model=stage_def.model,
+            model=stage_def.model.value if stage_def.model else None,
             executor=stage_def.executor.value,
             reasoning_effort=stage_def.reasoning_effort,
             timeout_seconds=stage_def.timeout_seconds,

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExecutorType(str, enum.Enum):
@@ -19,6 +19,20 @@ class SupportedModel(str, enum.Enum):
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
     CLAUDE_OPUS_4_6 = "claude-opus-4-6"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
+
+
+_SUPPORTED_MODELS_BY_EXECUTOR = {
+    ExecutorType.CODEX: (SupportedModel.GPT_5_4.value,),
+    ExecutorType.GEMINI: (SupportedModel.GEMINI_3_1_PRO_PREVIEW.value,),
+    ExecutorType.CLAUDE: (
+        SupportedModel.CLAUDE_OPUS_4_6.value,
+        SupportedModel.CLAUDE_SONNET_4_6.value,
+    ),
+}
+
+
+def supported_models_for_executor(executor: ExecutorType) -> tuple[str, ...]:
+    return _SUPPORTED_MODELS_BY_EXECUTOR[executor]
 
 
 class WorkerStatus(str, enum.Enum):
@@ -147,12 +161,24 @@ class StageDefinition(BaseModel):
     name: str
     executor: ExecutorType
     prompt_template: str
-    model: Optional[str] = None
+    model: Optional[SupportedModel] = None
     worktree_strategy: WorktreeStrategy = WorktreeStrategy.NEW
     depends_on: list[int] = Field(default_factory=list)
     timeout_seconds: Optional[int] = None
     reasoning_effort: Optional[str] = None
     extra_args: Optional[list[str]] = None
+
+    @model_validator(mode="after")
+    def validate_model_executor_compatibility(self) -> StageDefinition:
+        if self.model is None:
+            return self
+        allowed_models = supported_models_for_executor(self.executor)
+        if self.model.value not in allowed_models:
+            raise ValueError(
+                f"Unsupported model '{self.model.value}' for executor "
+                f"'{self.executor.value}'. Allowed models: {', '.join(allowed_models)}"
+            )
+        return self
 
 
 class WorkflowStatus(str, enum.Enum):
