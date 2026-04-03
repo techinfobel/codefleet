@@ -39,9 +39,17 @@ class ResultStatus(str, enum.Enum):
     BLOCKED = "blocked"
 
 
+class TestResult(BaseModel):
+    command: str
+    status: str
+    details: str
+
+
 class WorkerResult(BaseModel):
     summary: str
     files_changed: list[str] = Field(default_factory=list)
+    tests: list[TestResult] = Field(default_factory=list)
+    commits: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     status: ResultStatus
 

@@ -41,6 +41,9 @@ Issues = "https://github.com/techinfobel/codefleet/issues"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "smoke: requires a real external executor and credentials",
+]
 
 [tool.coverage.run]
 source = ["src/codefleet"]

@@ -26,10 +26,14 @@ class TestBuildCodexCommand:
         cmd = build_codex_command(prompt_path, result_path)
         assert cmd[0] == "codex"
         assert cmd[1] == "exec"
+        assert "--output-schema" in cmd
+        assert str(result_path.with_name("result_schema.json")) in cmd
+        assert "--output-last-message" in cmd
+        assert str(result_path) in cmd
         assert "--model" in cmd
         assert "gpt-5.4" in cmd
         assert str(prompt_path) in cmd[-1]
-        assert str(result_path) in cmd[-1]
+        assert str(result_path) not in cmd[-1]
 
     def test_custom_model(self, tmp_path):
         cmd = build_codex_command(
@@ -333,6 +337,37 @@ class TestWorkerProcess:
 
         assert "error" in completed
         assert "stale" in completed["error"].lower()
+
+    def test_timeout_kills_long_running_process(self, tmp_path):
+        """A process is killed once it exceeds timeout_seconds."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        wp = WorkerProcess(
+            worker_id="w_test_timeout",
+            command=[sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=2,
+            on_complete=on_complete,
+            stale_timeout=0,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 10
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert "error" in completed
+        assert "timed out" in completed["error"].lower()
 
     def test_cancel(self, tmp_path):
         """Cancel a running subprocess."""

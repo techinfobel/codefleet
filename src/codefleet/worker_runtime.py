@@ -5,10 +5,60 @@ import shutil
 import subprocess
 import threading
 import time
+import json
 from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
+
+
+def write_result_schema(path: Path) -> None:
+    """Write the shared result schema used for structured final output."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "files_changed": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "tests": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["passed", "failed", "not_run"],
+                        },
+                        "details": {"type": "string"},
+                    },
+                    "required": ["command", "status", "details"],
+                    "additionalProperties": False,
+                },
+                "default": [],
+            },
+            "commits": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "next_steps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "status": {
+                "type": "string",
+                "enum": ["completed", "blocked"],
+            },
+        },
+        "required": ["summary", "status"],
+        "additionalProperties": False,
+    }
+    path.write_text(json.dumps(schema, indent=2), encoding="utf-8")
 
 
 def get_codex_path() -> str | None:
@@ -39,6 +89,18 @@ def _result_instruction(prompt_path: Path, result_json_path: Path) -> str:
     )
 
 
+def _codex_result_instruction(prompt_path: Path) -> str:
+    """Build the Codex-specific instruction string."""
+    return (
+        f"Read the task prompt from {prompt_path}. "
+        f"Work in the current directory (a git worktree). "
+        f"Do NOT commit or modify anything in the .codefleet/ directory. "
+        f"Run relevant tests where appropriate. "
+        f"Return a single JSON object as your final response matching the provided output schema. "
+        f"Do not wrap the JSON in markdown."
+    )
+
+
 def build_codex_command(
     prompt_path: Path,
     result_json_path: Path,
@@ -47,9 +109,18 @@ def build_codex_command(
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the codex exec command."""
-    instruction = _result_instruction(prompt_path, result_json_path)
+    instruction = _codex_result_instruction(prompt_path)
+    result_schema_path = result_json_path.with_name("result_schema.json")
 
-    cmd = ["codex", "exec", "--full-auto"]
+    cmd = [
+        "codex",
+        "exec",
+        "--full-auto",
+        "--output-schema",
+        str(result_schema_path),
+        "--output-last-message",
+        str(result_json_path),
+    ]
     if model:
         cmd.extend(["--model", model])
     if reasoning_effort:
@@ -268,6 +339,7 @@ class WorkerProcess:
         error = None
         last_output_size = self._output_size()
         last_activity = time.monotonic()
+        started_at = time.monotonic()
         try:
             while True:
                 try:
@@ -324,6 +396,10 @@ class WorkerProcess:
                     # Check for activity (output growth)
                     current_size = self._output_size()
                     now = time.monotonic()
+                    if now - started_at >= self.timeout_seconds:
+                        self._terminate()
+                        error = f"Worker timed out after {self.timeout_seconds}s"
+                        return
                     if current_size != last_output_size:
                         last_output_size = current_size
                         last_activity = now

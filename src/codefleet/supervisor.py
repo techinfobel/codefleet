@@ -32,6 +32,7 @@ from .worker_runtime import (
     get_codex_path,
     get_gemini_path,
     get_claude_path,
+    write_result_schema,
 )
 
 logger = logging.getLogger(__name__)
@@ -287,7 +288,9 @@ class FleetSupervisor:
             gitignore.write_text("*\n")
         prompt_path = codefleet_dir / "prompt.txt"
         result_json_path = codefleet_dir / "result.json"
+        result_schema_path = codefleet_dir / "result_schema.json"
         prompt_path.write_text(prompt, encoding="utf-8")
+        write_result_schema(result_schema_path)
 
         cmd = build_worker_command(
             executor=executor_type.value,

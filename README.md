@@ -252,9 +252,13 @@ Literal curly braces in prompts (JSON examples, code snippets) are safe — only
 git clone https://github.com/techinfobel/codefleet
 cd codefleet
 uv pip install -e ".[dev]"
-python -m pytest tests/ -v          # 192 tests
+python -m pytest tests/ -v
 python -m pytest tests/ --cov
+FLEET_RUN_REAL_CODEX_SMOKE=1 python -m pytest tests/test_codex_smoke.py -m smoke -v
 ```
+
+The real Codex smoke test is opt-in. It requires a working `codex` CLI login and will make a live model call.
+You can override the model and timeout with `FLEET_REAL_CODEX_SMOKE_MODEL` and `FLEET_REAL_CODEX_SMOKE_TIMEOUT`.
 
 ## Recording the Demo
 

@@ -16,6 +16,14 @@ class TestParseResultFile:
                 {
                     "summary": "Implemented feature X",
                     "files_changed": ["src/x.py", "tests/test_x.py"],
+                    "tests": [
+                        {
+                            "command": "uv run pytest",
+                            "status": "passed",
+                            "details": "12 passed",
+                        }
+                    ],
+                    "commits": ["abc123"],
                     "next_steps": ["Add docs"],
                     "status": "completed",
                 }
@@ -24,6 +32,8 @@ class TestParseResultFile:
         result = parse_result_file(result_file)
         assert result.summary == "Implemented feature X"
         assert result.files_changed == ["src/x.py", "tests/test_x.py"]
+        assert result.tests[0].command == "uv run pytest"
+        assert result.commits == ["abc123"]
         assert result.status == ResultStatus.COMPLETED
 
     def test_valid_minimal_result(self, tmp_path):
