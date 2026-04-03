@@ -223,7 +223,7 @@ Literal curly braces in prompts (JSON examples, code snippets) are safe — only
 |----------|---------|-------------|
 | `FLEET_DEFAULT_EXECUTOR` | `codex` | Default agent: `codex`, `gemini`, or `claude` |
 | `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
-| `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-2.5-pro` | Default Gemini model |
+| `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
 | `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker safety timeout in seconds (stale detection is the primary mechanism) |
 | `FLEET_MAX_CONCURRENT` | `50` | Max simultaneous workers |

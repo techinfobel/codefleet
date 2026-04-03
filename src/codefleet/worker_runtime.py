@@ -134,7 +134,7 @@ def build_codex_command(
 def build_gemini_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "gemini-2.5-pro",
+    model: str = "gemini-3.1-pro-preview",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the gemini CLI command."""

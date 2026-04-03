@@ -69,7 +69,7 @@ class TestBuildGeminiCommand:
         assert "--output-format" in cmd
         assert "stream-json" in cmd
         assert "-m" in cmd
-        assert "gemini-2.5-pro" in cmd
+        assert "gemini-3.1-pro-preview" in cmd
 
     def test_custom_model(self, tmp_path):
         cmd = build_gemini_command(
@@ -150,7 +150,7 @@ class TestBuildWorkerCommand:
             executor="gemini",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
         )
         assert cmd[0] == "gemini"
 
@@ -178,7 +178,7 @@ class TestBuildWorkerCommand:
             executor="gemini",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="gemini-2.5-pro",
+            model="gemini-3.1-pro-preview",
             reasoning_effort="high",
         )
         assert not any("reasoning_effort" in arg for arg in cmd)

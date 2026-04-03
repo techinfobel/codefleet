@@ -24,7 +24,7 @@ def test_real_gemini_worker_smoke(tmp_path, git_repo):
     if gemini_path is None:
         pytest.skip("gemini CLI is not installed")
 
-    model = os.environ.get("FLEET_REAL_GEMINI_SMOKE_MODEL", "gemini-2.5-pro")
+    model = os.environ.get("FLEET_REAL_GEMINI_SMOKE_MODEL", "gemini-3.1-pro-preview")
     timeout_seconds = int(os.environ.get("FLEET_REAL_GEMINI_SMOKE_TIMEOUT", "180"))
 
     base_dir = tmp_path / "fleet"

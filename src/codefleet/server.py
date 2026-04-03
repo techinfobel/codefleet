@@ -170,7 +170,7 @@ def _default_supervisor() -> FleetSupervisor:
         base_dir=os.environ.get("FLEET_BASE_DIR"),
         default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.4"),
         default_gemini_model=os.environ.get(
-            "FLEET_GEMINI_DEFAULT_MODEL", "gemini-2.5-pro"
+            "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
         ),
         default_claude_model=os.environ.get(
             "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
@@ -239,7 +239,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 "benchmarks": "SWE-Bench Pro 57.7%, Terminal-Bench 77.3%",
             },
             "gemini": {
-                "model": "gemini-2.5-pro",
+                "model": "gemini-3.1-pro-preview",
                 "best_for": [
                     "Scientific and research code (SciCode leader at 59.0%)",
                     "UI/frontend generation from mockups, PDFs, or sketches",
