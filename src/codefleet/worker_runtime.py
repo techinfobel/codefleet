@@ -55,7 +55,14 @@ def write_result_schema(path: Path) -> None:
                 "enum": ["completed", "blocked"],
             },
         },
-        "required": ["summary", "status"],
+        "required": [
+            "summary",
+            "files_changed",
+            "tests",
+            "commits",
+            "next_steps",
+            "status",
+        ],
         "additionalProperties": False,
     }
     path.write_text(json.dumps(schema, indent=2), encoding="utf-8")
@@ -156,7 +163,7 @@ def build_gemini_command(
 def build_claude_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "claude-opus-4-6",
+    model: str = "claude-sonnet-4-6",
     effort: str = "high",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -199,7 +206,7 @@ def build_worker_command(
             prompt_path=prompt_path,
             result_json_path=result_json_path,
             model=model,
-            effort=reasoning_effort or "max",
+            effort=reasoning_effort or "high",
             extra_args=extra_args,
         )
     # Default: codex
@@ -229,6 +236,8 @@ class WorkerProcess:
         "please login",
         "please log in",
         "authentication required",
+        "not logged in",
+        "please run /login",
     ]
 
     def __init__(

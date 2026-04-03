@@ -102,7 +102,7 @@ class TestBuildClaudeCommand:
         assert "stream-json" in cmd
         assert "--verbose" in cmd
         assert "--model" in cmd
-        assert "claude-opus-4-6" in cmd
+        assert "claude-sonnet-4-6" in cmd
         # Default effort is high
         assert "--effort" in cmd
         assert "high" in cmd
@@ -111,10 +111,10 @@ class TestBuildClaudeCommand:
         cmd = build_claude_command(
             tmp_path / "p.txt",
             tmp_path / "r.json",
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
         )
         idx = cmd.index("--model")
-        assert cmd[idx + 1] == "claude-opus-4-6"
+        assert cmd[idx + 1] == "claude-sonnet-4-6"
 
     def test_custom_effort(self, tmp_path):
         cmd = build_claude_command(
@@ -159,7 +159,7 @@ class TestBuildWorkerCommand:
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
         )
         assert cmd[0] == "claude"
 
@@ -188,23 +188,23 @@ class TestBuildWorkerCommand:
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-opus-4-6",
-            reasoning_effort="max",
+            model="claude-sonnet-4-6",
+            reasoning_effort="high",
         )
         assert "--effort" in cmd
         idx = cmd.index("--effort")
-        assert cmd[idx + 1] == "max"
+        assert cmd[idx + 1] == "high"
 
-    def test_claude_defaults_effort_max(self, tmp_path):
+    def test_claude_defaults_effort_high(self, tmp_path):
         cmd = build_worker_command(
             executor="claude",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
         )
         assert "--effort" in cmd
         idx = cmd.index("--effort")
-        assert cmd[idx + 1] == "max"
+        assert cmd[idx + 1] == "high"
 
 
 class TestGetCodexPath:
@@ -389,6 +389,43 @@ class TestWorkerProcess:
 
         wp = WorkerProcess(
             worker_id="w_test_auth",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=30,
+            on_complete=on_complete,
+            stale_timeout=10,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 10
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        assert "error" in completed
+        assert "authentication required" in completed["error"].lower()
+
+    def test_claude_login_prompt_fails_fast(self, tmp_path):
+        """Claude login prompts are detected and reported clearly."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+            completed["error"] = error
+
+        script = (
+            "import time; "
+            "print('Not logged in · Please run /login', flush=True); "
+            "time.sleep(60)"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_test_claude_auth",
             command=[sys.executable, "-c", script],
             cwd=tmp_path,
             stdout_path=stdout_path,

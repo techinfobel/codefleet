@@ -181,7 +181,7 @@ def _default_supervisor() -> FleetSupervisor:
             "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
         ),
         default_claude_model=os.environ.get(
-            "FLEET_CLAUDE_DEFAULT_MODEL", "claude-opus-4-6"
+            "FLEET_CLAUDE_DEFAULT_MODEL", "claude-sonnet-4-6"
         ),
         default_reasoning_effort=os.environ.get("FLEET_REASONING_EFFORT", "max"),
         default_timeout=int(os.environ.get("FLEET_DEFAULT_TIMEOUT", "600")),
@@ -265,7 +265,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
                 "benchmarks": "SWE-Bench 80.6%, Terminal-Bench 78.4%, SciCode 59.0%",
             },
             "claude": {
-                "model": "claude-opus-4-6",
+                "model": "claude-sonnet-4-6",
                 "best_for": [
                     "Multi-file architecture and complex refactoring",
                     "First-pass code correctness (95% on first try)",

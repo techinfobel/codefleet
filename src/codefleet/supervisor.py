@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
-DEFAULT_CLAUDE_MODEL = "claude-opus-4-6"
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 DEFAULT_REASONING_EFFORT = "max"
 DEFAULT_TIMEOUT = 600  # 10 minutes
 DEFAULT_BASE_DIR = Path.home() / ".codex-fleet"
@@ -55,7 +55,7 @@ DEFAULT_HEARTBEAT_INTERVAL = 30.0
 _EXECUTOR_REASONING_DEFAULTS = {
     ExecutorType.CODEX: "xhigh",      # OpenAI: low, medium, high, xhigh
     ExecutorType.GEMINI: None,         # Gemini CLI has no effort flag
-    ExecutorType.CLAUDE: "max",        # Claude: low, medium, high, max
+    ExecutorType.CLAUDE: "high",       # Claude: low, medium, high, max
 }
 
 
