@@ -245,7 +245,7 @@ class TestExecutorType:
             branch_name="b",
             worktree_path="/w",
             worker_dir="/d",
-            model="gemini-3.1-pro-preview",
+            model="gemini-2.5-pro",
             executor=ExecutorType.GEMINI,
             status=WorkerStatus.PENDING,
             created_at=time.time(),

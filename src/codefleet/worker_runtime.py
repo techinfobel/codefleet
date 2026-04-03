@@ -134,7 +134,7 @@ def build_codex_command(
 def build_gemini_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "gemini-3.1-pro-preview",
+    model: str = "gemini-2.5-pro",
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
     """Build the gemini CLI command."""
@@ -222,6 +222,13 @@ class WorkerProcess:
         "resource_exhausted",
         "too many requests",
         "quota exceeded",
+    ]
+    _AUTH_REQUIRED_PATTERNS = [
+        "opening authentication page in your browser",
+        "login required",
+        "please login",
+        "please log in",
+        "authentication required",
     ]
 
     def __init__(
@@ -311,6 +318,18 @@ class WorkerProcess:
             except OSError:
                 pass
         return total
+
+    def _detect_auth_required(self) -> bool:
+        """Check stdout/stderr for authentication prompts that need user action."""
+        try:
+            text = []
+            for path in (self.stdout_path, self.stderr_path):
+                if path.exists():
+                    text.append(path.read_text(encoding="utf-8", errors="replace"))
+            combined = "\n".join(text).lower()
+            return any(pattern in combined for pattern in self._AUTH_REQUIRED_PATTERNS)
+        except Exception:
+            return False
 
     def _restart_process(self, stdout_f, stderr_f, reason: str):
         """Kill current process and restart in the same worktree.
@@ -403,6 +422,14 @@ class WorkerProcess:
                     if current_size != last_output_size:
                         last_output_size = current_size
                         last_activity = now
+                    if self._detect_auth_required():
+                        self._terminate()
+                        error = (
+                            "Executor authentication required. "
+                            "Run the CLI interactively once to complete login, "
+                            "then retry the worker."
+                        )
+                        return
 
                     # Stale detection: no output for stale_timeout seconds
                     if (

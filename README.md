@@ -223,7 +223,7 @@ Literal curly braces in prompts (JSON examples, code snippets) are safe — only
 |----------|---------|-------------|
 | `FLEET_DEFAULT_EXECUTOR` | `codex` | Default agent: `codex`, `gemini`, or `claude` |
 | `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
-| `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
+| `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-2.5-pro` | Default Gemini model |
 | `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-opus-4-6` | Default Claude model |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker safety timeout in seconds (stale detection is the primary mechanism) |
 | `FLEET_MAX_CONCURRENT` | `50` | Max simultaneous workers |
@@ -255,10 +255,12 @@ uv pip install -e ".[dev]"
 python -m pytest tests/ -v
 python -m pytest tests/ --cov
 FLEET_RUN_REAL_CODEX_SMOKE=1 python -m pytest tests/test_codex_smoke.py -m smoke -v
+FLEET_RUN_REAL_GEMINI_SMOKE=1 python -m pytest tests/test_gemini_smoke.py -m smoke -v
 ```
 
-The real Codex smoke test is opt-in. It requires a working `codex` CLI login and will make a live model call.
-You can override the model and timeout with `FLEET_REAL_CODEX_SMOKE_MODEL` and `FLEET_REAL_CODEX_SMOKE_TIMEOUT`.
+The real smoke tests are opt-in. They require working CLI logins and make live model calls.
+You can override the Codex model/timeout with `FLEET_REAL_CODEX_SMOKE_MODEL` and `FLEET_REAL_CODEX_SMOKE_TIMEOUT`.
+You can override the Gemini model/timeout with `FLEET_REAL_GEMINI_SMOKE_MODEL` and `FLEET_REAL_GEMINI_SMOKE_TIMEOUT`.
 
 ## Recording the Demo
 
