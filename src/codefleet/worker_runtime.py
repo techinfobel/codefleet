@@ -404,6 +404,7 @@ class WorkerProcess:
             self._process = subprocess.Popen(
                 self.command,
                 cwd=str(self.cwd),
+                stdin=subprocess.DEVNULL,
                 stdout=stdout_f,
                 stderr=stderr_f,
                 start_new_session=True,
@@ -502,6 +503,7 @@ class WorkerProcess:
         self._process = subprocess.Popen(
             self.command,
             cwd=str(self.cwd),
+            stdin=subprocess.DEVNULL,
             stdout=stdout_f,
             stderr=stderr_f,
             start_new_session=True,
@@ -599,6 +601,7 @@ class WorkerProcess:
                             self._process = subprocess.Popen(
                                 self.command,
                                 cwd=str(self.cwd),
+                                stdin=subprocess.DEVNULL,
                                 stdout=stdout_f,
                                 stderr=stderr_f,
                                 start_new_session=True,

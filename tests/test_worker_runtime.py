@@ -622,6 +622,44 @@ class TestWorkerProcess:
         assert "err2" in stderr_content
 
 
+    def test_stdin_is_closed(self, tmp_path):
+        """Worker processes cannot read from stdin (prevents executor hangs)."""
+        stdout_path = tmp_path / "stdout.log"
+        stderr_path = tmp_path / "stderr.log"
+
+        completed = {}
+
+        def on_complete(wid, exit_code, error):
+            completed["exit_code"] = exit_code
+
+        # Script tries to read from stdin — should get EOF immediately,
+        # not block waiting for input (which caused the Codex hang bug).
+        script = (
+            "import sys; "
+            "data = sys.stdin.read(); "
+            "print(f'stdin_empty={len(data) == 0}')"
+        )
+
+        wp = WorkerProcess(
+            worker_id="w_test_stdin",
+            command=[sys.executable, "-c", script],
+            cwd=tmp_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=5,
+            on_complete=on_complete,
+        )
+
+        wp.start()
+
+        deadline = time.monotonic() + 5
+        while "exit_code" not in completed and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+        assert completed["exit_code"] == 0, "Process hung waiting for stdin"
+        assert "stdin_empty=True" in stdout_path.read_text()
+
+
 class TestRateLimitRetry:
     """Test automatic retry on rate-limit (429) errors."""
 
