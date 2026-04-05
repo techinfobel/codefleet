@@ -87,6 +87,9 @@ def _codex_result_instruction(prompt_path: Path) -> str:
         f"Work in the current directory (a git worktree). "
         f"Do NOT commit or modify anything in the .codefleet/ directory. "
         f"Run relevant tests where appropriate. "
+        f"When you are done, stage and commit all changed files with a descriptive "
+        f"commit message. Include the commit hashes in the 'commits' field of your "
+        f"response. "
         f"Return a single JSON object as your final response matching the provided output schema. "
         f"Do not wrap the JSON in markdown."
     )
@@ -99,6 +102,9 @@ def _stream_result_instruction(prompt_path: Path) -> str:
         f"Work in the current directory (a git worktree). "
         f"Do NOT commit or modify anything in the .codefleet/ directory. "
         f"Run relevant tests where appropriate. "
+        f"When you are done, stage and commit all changed files with a descriptive "
+        f"commit message. Include the commit hashes in the 'commits' field of your "
+        f"response. "
         f"Return exactly one JSON object as your final response with this schema: "
         f'{{"summary": "string", "files_changed": ["path"], '
         f'"tests": [{{"command": "string", "status": "passed|failed|not_run", '

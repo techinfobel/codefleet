@@ -10,6 +10,8 @@ import pytest
 
 from codefleet.worker_runtime import (
     WorkerProcess,
+    _codex_result_instruction,
+    _stream_result_instruction,
     build_codex_command,
     build_gemini_command,
     build_claude_command,
@@ -20,6 +22,20 @@ from codefleet.worker_runtime import (
     materialize_result_from_stdout,
     parse_executor_result_from_stdout,
 )
+
+
+class TestInstructionCommitRequirement:
+    """Both instruction builders must tell agents to commit their work."""
+
+    def test_codex_instruction_requires_commit(self, tmp_path):
+        instruction = _codex_result_instruction(tmp_path / "prompt.txt")
+        assert "commit" in instruction.lower()
+        assert "commits" in instruction  # refers to the result field
+
+    def test_stream_instruction_requires_commit(self, tmp_path):
+        instruction = _stream_result_instruction(tmp_path / "prompt.txt")
+        assert "commit" in instruction.lower()
+        assert "commits" in instruction  # refers to the result field
 
 
 class TestBuildCodexCommand:

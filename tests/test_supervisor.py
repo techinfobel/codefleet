@@ -1070,3 +1070,177 @@ class TestClaudeExecutor:
         result = supervisor.healthcheck()
         assert "claude_found" in result
         assert "claude_path" in result
+
+
+class TestSalvageResult:
+    """Tests for _salvage_result auto-commit safety net."""
+
+    def _setup_worktree_worker(self, supervisor, git_repo, tmp_path):
+        """Create a real worktree and a WorkerRecord pointing at it.
+
+        Returns (record, worktree_path, base_commit).
+        """
+        # Get the current HEAD as base_commit
+        base_commit = subprocess.run(
+            ["git", "-C", str(git_repo), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+        worker_id = "w_salvage_test"
+        worker_dir = tmp_path / "workers" / worker_id
+        worker_dir.mkdir(parents=True)
+
+        branch_name = f"codex/salvage/{worker_id}"
+        worktree_path = worker_dir / "worktree"
+
+        # Create a real worktree
+        subprocess.run(
+            ["git", "-C", str(git_repo), "worktree", "add",
+             "-b", branch_name, str(worktree_path), "HEAD"],
+            capture_output=True, check=True,
+        )
+
+        # Write meta.json with base_commit
+        meta_path = worker_dir / "meta.json"
+        meta_path.write_text(json.dumps({"base_commit": base_commit}))
+
+        # Set up .codefleet dir in worktree
+        codefleet_dir = worktree_path / ".codefleet"
+        codefleet_dir.mkdir(exist_ok=True)
+
+        result_json_path = codefleet_dir / "result.json"
+
+        record = WorkerRecord(
+            worker_id=worker_id,
+            task_name="salvage test",
+            repo_path=str(git_repo),
+            branch_name=branch_name,
+            worktree_path=str(worktree_path),
+            worker_dir=str(worker_dir),
+            model="gpt-5.4",
+            status=WorkerStatus.FAILED,
+            created_at=time.time(),
+            timeout_seconds=60,
+            command_json='["codex", "exec", "test"]',
+            prompt="Salvage me",
+            result_json_path=str(result_json_path),
+            stdout_path=str(worker_dir / "stdout.log"),
+            stderr_path=str(worker_dir / "stderr.log"),
+            prompt_path=str(codefleet_dir / "prompt.txt"),
+            meta_path=str(meta_path),
+        )
+
+        return record, worktree_path, base_commit
+
+    def test_auto_commits_uncommitted_changes(self, supervisor, git_repo, tmp_path):
+        """Uncommitted changes in the worktree are auto-committed during salvage."""
+        record, worktree_path, base_commit = self._setup_worktree_worker(
+            supervisor, git_repo, tmp_path,
+        )
+
+        # Create an uncommitted file in the worktree
+        (worktree_path / "new_feature.py").write_text("print('hello')")
+
+        result = supervisor._salvage_result(record)
+        assert result is True
+
+        # Verify the file was committed (not just staged)
+        status = subprocess.run(
+            ["git", "-C", str(worktree_path), "status", "--porcelain"],
+            capture_output=True, text=True,
+        )
+        assert "new_feature.py" not in status.stdout
+
+        # Verify the commit exists on the branch
+        log = subprocess.run(
+            ["git", "-C", str(worktree_path), "log", "--oneline", "-1"],
+            capture_output=True, text=True,
+        )
+        assert "auto-commit" in log.stdout
+
+        # Verify salvaged result.json lists the file
+        result_data = json.loads(Path(record.result_json_path).read_text())
+        assert "new_feature.py" in result_data["files_changed"]
+
+    def test_salvage_includes_already_committed_changes(self, supervisor, git_repo, tmp_path):
+        """Changes the agent already committed are included in the salvaged result."""
+        record, worktree_path, base_commit = self._setup_worktree_worker(
+            supervisor, git_repo, tmp_path,
+        )
+
+        # Simulate an agent that committed properly
+        (worktree_path / "committed.py").write_text("x = 1")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", "committed.py"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "agent commit"],
+            capture_output=True, check=True,
+        )
+
+        result = supervisor._salvage_result(record)
+        assert result is True
+
+        result_data = json.loads(Path(record.result_json_path).read_text())
+        assert "committed.py" in result_data["files_changed"]
+
+    def test_salvage_excludes_codefleet_dir(self, supervisor, git_repo, tmp_path):
+        """Files under .codefleet/ are not included in salvaged results."""
+        record, worktree_path, base_commit = self._setup_worktree_worker(
+            supervisor, git_repo, tmp_path,
+        )
+
+        # Only create a .codefleet file (no real work)
+        (worktree_path / ".codefleet" / "internal.txt").write_text("meta")
+
+        result = supervisor._salvage_result(record)
+        # No real changes to salvage
+        assert result is False
+
+    def test_salvage_no_changes_returns_false(self, supervisor, git_repo, tmp_path):
+        """If there are no changes at all, salvage returns False."""
+        record, worktree_path, base_commit = self._setup_worktree_worker(
+            supervisor, git_repo, tmp_path,
+        )
+
+        result = supervisor._salvage_result(record)
+        assert result is False
+
+    def test_salvage_mixed_committed_and_uncommitted(self, supervisor, git_repo, tmp_path):
+        """Both committed and uncommitted files appear in the salvaged result."""
+        record, worktree_path, base_commit = self._setup_worktree_worker(
+            supervisor, git_repo, tmp_path,
+        )
+
+        # Agent committed one file
+        (worktree_path / "done.py").write_text("done = True")
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "add", "done.py"],
+            capture_output=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "commit", "-m", "partial work"],
+            capture_output=True, check=True,
+        )
+
+        # Agent forgot to commit this one
+        (worktree_path / "forgot.py").write_text("forgot = True")
+
+        result = supervisor._salvage_result(record)
+        assert result is True
+
+        result_data = json.loads(Path(record.result_json_path).read_text())
+        assert "done.py" in result_data["files_changed"]
+        assert "forgot.py" in result_data["files_changed"]
+
+        # Both should now be committed (only .codefleet/ remains untracked)
+        status = subprocess.run(
+            ["git", "-C", str(worktree_path), "status", "--porcelain"],
+            capture_output=True, text=True,
+        )
+        remaining = [
+            line for line in status.stdout.strip().split("\n")
+            if line.strip() and not line.endswith(".codefleet/")
+        ]
+        assert remaining == []

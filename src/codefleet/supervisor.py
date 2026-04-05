@@ -628,7 +628,44 @@ class FleetSupervisor:
         except Exception:
             pass
 
-        # Check committed changes since branch creation
+        # Auto-commit any uncommitted changes so they survive worktree cleanup
+        try:
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(worktree),
+                capture_output=True, text=True, timeout=10,
+            )
+            if status_result.returncode == 0 and status_result.stdout.strip():
+                uncommitted = [
+                    line[3:].strip()
+                    for line in status_result.stdout.strip().split("\n")
+                    if line.strip() and not line[3:].strip().startswith(".codefleet/")
+                ]
+                if uncommitted:
+                    subprocess.run(
+                        ["git", "add", "--"] + uncommitted,
+                        cwd=str(worktree),
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    subprocess.run(
+                        ["git", "commit", "-m",
+                         "auto-commit: uncommitted agent work (salvaged)"],
+                        cwd=str(worktree),
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    logger.info(
+                        "Auto-committed %d uncommitted files for worker %s",
+                        len(uncommitted),
+                        record.worker_id,
+                    )
+        except Exception:
+            logger.debug(
+                "Auto-commit failed for worker %s",
+                record.worker_id,
+                exc_info=True,
+            )
+
+        # Re-check committed changes (now includes any auto-committed work)
         if base_commit:
             try:
                 result = subprocess.run(
@@ -644,21 +681,6 @@ class FleetSupervisor:
                     )
             except Exception:
                 pass
-
-        # Check uncommitted and staged changes
-        try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=str(worktree),
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                for line in result.stdout.strip().split("\n"):
-                    if line.strip():
-                        # porcelain format: XY filename
-                        files_changed.add(line[3:].strip())
-        except Exception:
-            pass
 
         # Filter out .codefleet/ internal files
         files_changed = {
