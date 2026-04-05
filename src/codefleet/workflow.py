@@ -73,7 +73,12 @@ class WorkflowEngine:
         self.supervisor.store.insert_workflow(record)
 
         root_indices = [i for i, s in enumerate(stage_defs) if not s.depends_on]
-        with self._lock:
+        if not self._lock.acquire(timeout=60):
+            raise RuntimeError(
+                "Timed out waiting for workflow engine lock — another "
+                "workflow operation may be in progress"
+            )
+        try:
             for idx in root_indices:
                 try:
                     self._start_stage(workflow_id, idx, record=record)
@@ -93,6 +98,8 @@ class WorkflowEngine:
             record = self.supervisor.store.update_workflow(
                 workflow_id, status=WorkflowStatus.RUNNING
             )
+        finally:
+            self._lock.release()
 
         return WorkflowStatusPayload.from_record(record)
 
@@ -217,17 +224,84 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     def on_stage_complete(self, worker_id: str, workflow_id: str, stage_index: int):
+        # Determine state changes and which stages to start under the lock,
+        # then release the lock before doing heavy I/O (worktree creation,
+        # process spawning) to avoid blocking create_workflow callers.
+        stages_to_start: list[int] = []
         with self._lock:
-            self._on_stage_complete_locked(worker_id, workflow_id, stage_index)
+            result = self._evaluate_stage_completion(
+                worker_id, workflow_id, stage_index
+            )
+            if result is None:
+                return
+            stages_to_start = result
 
-    def _on_stage_complete_locked(self, worker_id: str, workflow_id: str, stage_index: int):
+        # Start downstream stages outside the lock — each may create a
+        # worktree (30 s subprocess) and spawn a worker process.
+        for idx in stages_to_start:
+            try:
+                self._start_stage(workflow_id, idx)
+            except Exception as e:
+                logger.exception(
+                    "Failed to start stage %d of workflow %s", idx, workflow_id
+                )
+                with self._lock:
+                    record = self.supervisor.store.get_workflow(workflow_id)
+                    if record is None:
+                        return
+                    state = record.stage_states.get(idx, StageState())
+                    state.status = WorkerStatus.FAILED
+                    record.stage_states[idx] = state
+                    self.supervisor.store.update_workflow(
+                        workflow_id,
+                        status=WorkflowStatus.FAILED,
+                        stage_states=record.stage_states,
+                        completed_at=time.time(),
+                        error_message=(
+                            f"Failed to start stage {idx} "
+                            f"({record.stages[idx].name}): {e}"
+                        ),
+                    )
+                return
+
+        # Check whether all stages are now terminal.
+        with self._lock:
+            record = self.supervisor.store.get_workflow(workflow_id)
+            if record is None:
+                return
+            statuses = [
+                record.stage_states.get(i, StageState()).status
+                for i in range(len(record.stages))
+            ]
+            if all(s.is_terminal for s in statuses):
+                final_status = (
+                    WorkflowStatus.SUCCEEDED
+                    if all(s == WorkerStatus.SUCCEEDED for s in statuses)
+                    else WorkflowStatus.FAILED
+                )
+                self.supervisor.store.update_workflow(
+                    workflow_id,
+                    status=final_status,
+                    completed_at=time.time(),
+                )
+
+    def _evaluate_stage_completion(
+        self, worker_id: str, workflow_id: str, stage_index: int
+    ) -> Optional[list[int]]:
+        """Evaluate a completed stage and return indices of stages to start.
+
+        Must be called while holding ``self._lock``.  Returns ``None`` if the
+        workflow/worker is missing or the workflow already failed, otherwise
+        returns a (possibly empty) list of stage indices whose dependencies
+        are now satisfied.
+        """
         record = self.supervisor.store.get_workflow(workflow_id)
         if record is None:
-            return
+            return None
 
         worker_record = self.supervisor.store.get_worker(worker_id)
         if worker_record is None:
-            return
+            return None
 
         state = record.stage_states.get(stage_index, StageState())
         state.status = worker_record.status
@@ -251,15 +325,16 @@ class WorkflowEngine:
                 error_message=f"Stage {stage_index} ({record.stages[stage_index].name}) "
                               f"{worker_record.status.value}: {worker_record.error_message or ''}",
             )
-            return
+            return None
 
         self.supervisor.store.update_workflow(
             workflow_id, stage_states=record.stage_states
         )
 
+        ready: list[int] = []
         for i, stage_def in enumerate(record.stages):
-            state = record.stage_states.get(i)
-            if state is None or state.status != WorkerStatus.PENDING:
+            s = record.stage_states.get(i)
+            if s is None or s.status != WorkerStatus.PENDING:
                 continue
             if stage_index not in stage_def.depends_on:
                 continue
@@ -269,42 +344,18 @@ class WorkflowEngine:
                 for dep in stage_def.depends_on
             )
             if all_deps_done:
-                try:
-                    self._start_stage(workflow_id, i, record=record)
-                except Exception as e:
-                    logger.exception(
-                        "Failed to start stage %d of workflow %s", i, workflow_id
-                    )
-                    state = record.stage_states.get(i, StageState())
-                    state.status = WorkerStatus.FAILED
-                    record.stage_states[i] = state
-                    self.supervisor.store.update_workflow(
-                        workflow_id,
-                        status=WorkflowStatus.FAILED,
-                        stage_states=record.stage_states,
-                        completed_at=time.time(),
-                        error_message=(
-                            f"Failed to start stage {i} ({stage_def.name}): {e}"
-                        ),
-                    )
-                    return
+                # Mark RUNNING now so no other callback tries to start the
+                # same stage concurrently.
+                s.status = WorkerStatus.RUNNING
+                record.stage_states[i] = s
+                ready.append(i)
 
-        record = self.supervisor.store.get_workflow(workflow_id)
-        statuses = [
-            record.stage_states.get(i, StageState()).status
-            for i in range(len(record.stages))
-        ]
-        if all(s.is_terminal for s in statuses):
-            final_status = (
-                WorkflowStatus.SUCCEEDED
-                if all(s == WorkerStatus.SUCCEEDED for s in statuses)
-                else WorkflowStatus.FAILED
-            )
+        if ready:
             self.supervisor.store.update_workflow(
-                workflow_id,
-                status=final_status,
-                completed_at=time.time(),
+                workflow_id, stage_states=record.stage_states
             )
+
+        return ready
 
     # ------------------------------------------------------------------
     # Internal
