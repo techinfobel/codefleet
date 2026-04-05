@@ -385,7 +385,9 @@ class FleetSupervisor:
             last_activity_at=None,
             timeout_seconds=timeout_seconds,
             command_json=json.dumps(cmd),
-            prompt=prompt,
+            # Full prompt is on disk at prompt_path; store only a preview
+            # in the DB to avoid slow inserts with large prompts.
+            prompt=prompt[:500] + "… [truncated]" if len(prompt) > 500 else prompt,
             result_json_path=str(result_json_path),
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
