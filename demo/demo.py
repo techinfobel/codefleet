@@ -143,7 +143,7 @@ def main():
     # --- Stage 3: review (depends on 0, 1, 2) ---
     outln(status_line(3, 4, 1, 0, "1m 40s"))
     outln()
-    outln(f"  {MAGENTA}[3]{RESET} {BOLD}review{RESET}  {DIM}claude / claude-opus-4-6 / effort: high (depends on: 0, 1, 2){RESET}")
+    outln(f"  {MAGENTA}[3]{RESET} {BOLD}review{RESET}  {DIM}claude / claude-opus-4-7 / effort: high (depends on: 0, 1, 2){RESET}")
     spin("Inheriting worktree from tests", 0.4, "same branch")
     spin("Claude reviewing all changes", 1.8, "review complete")
     outln(f"      {CHECK} {GREEN}[OK]{RESET} review \u2014 0m 15s")

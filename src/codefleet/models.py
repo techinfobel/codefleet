@@ -17,7 +17,7 @@ class ExecutorType(str, enum.Enum):
 class SupportedModel(str, enum.Enum):
     GPT_5_4 = "gpt-5.4"
     GEMINI_3_1_PRO_PREVIEW = "gemini-3.1-pro-preview"
-    CLAUDE_OPUS_4_6 = "claude-opus-4-6"
+    CLAUDE_OPUS_4_7 = "claude-opus-4-7"
     CLAUDE_SONNET_4_6 = "claude-sonnet-4-6"
 
 
@@ -25,7 +25,7 @@ _SUPPORTED_MODELS_BY_EXECUTOR = {
     ExecutorType.CODEX: (SupportedModel.GPT_5_4.value,),
     ExecutorType.GEMINI: (SupportedModel.GEMINI_3_1_PRO_PREVIEW.value,),
     ExecutorType.CLAUDE: (
-        SupportedModel.CLAUDE_OPUS_4_6.value,
+        SupportedModel.CLAUDE_OPUS_4_7.value,
         SupportedModel.CLAUDE_SONNET_4_6.value,
     ),
 }

@@ -323,7 +323,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         Allowed model values:
         - codex: gpt-5.4
         - gemini: gemini-3.1-pro-preview
-        - claude: claude-opus-4-6, claude-sonnet-4-6"""
+        - claude: claude-opus-4-7, claude-sonnet-4-6"""
         try:
             result = supervisor.create_worker(
                 repo_path=repo_path,
@@ -436,7 +436,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
           worktree_strategy (str, default="new"): "new" = fresh worktree, "inherit" = reuse
               the first dependency's worktree (requires depends_on to be non-empty).
           model (str, optional): Override the executor's default model.
-              Allowed values: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4-6, claude-sonnet-4-6.
+              Allowed values: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4-7, claude-sonnet-4-6.
           timeout_seconds (int, optional): Override default timeout for this stage.
 
         Example stages:

@@ -69,7 +69,7 @@ class TestHealthcheck:
         assert result["supported_models"]["codex"] == ["gpt-5.4"]
         assert result["supported_models"]["gemini"] == ["gemini-3.1-pro-preview"]
         assert result["supported_models"]["claude"] == [
-            "claude-opus-4-6",
+            "claude-opus-4-7",
             "claude-sonnet-4-6",
         ]
 

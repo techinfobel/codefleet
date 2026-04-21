@@ -142,7 +142,7 @@ class TestStageSchemaValidation:
             branch_name="claude/review/w_stage_model",
             worktree_path=str(git_repo),
             worker_dir=str(git_repo / ".worker"),
-            model="claude-opus-4-6",
+            model="claude-opus-4-7",
             executor=ExecutorType.CLAUDE,
             created_at=time.time(),
             timeout_seconds=60,
@@ -162,7 +162,7 @@ class TestStageSchemaValidation:
                     {
                         "name": "review",
                         "executor": "claude",
-                        "model": SupportedModel.CLAUDE_OPUS_4_6.value,
+                        "model": SupportedModel.CLAUDE_OPUS_4_7.value,
                         "prompt_template": "{task_prompt}",
                         "worktree_strategy": "new",
                         "depends_on": [],
@@ -170,7 +170,7 @@ class TestStageSchemaValidation:
                 ],
             )
 
-        assert mock_create.call_args.kwargs["model"] == "claude-opus-4-6"
+        assert mock_create.call_args.kwargs["model"] == "claude-opus-4-7"
 
 
 # ---------------------------------------------------------------------------

@@ -267,7 +267,7 @@ class TestSupportedModel:
     def test_values(self):
         assert SupportedModel.GPT_5_4.value == "gpt-5.4"
         assert SupportedModel.GEMINI_3_1_PRO_PREVIEW.value == "gemini-3.1-pro-preview"
-        assert SupportedModel.CLAUDE_OPUS_4_6.value == "claude-opus-4-6"
+        assert SupportedModel.CLAUDE_OPUS_4_7.value == "claude-opus-4-7"
         assert SupportedModel.CLAUDE_SONNET_4_6.value == "claude-sonnet-4-6"
 
     def test_from_string(self):
@@ -307,7 +307,7 @@ class TestSupportedModel:
             "gemini-3.1-pro-preview",
         )
         assert supported_models_for_executor(ExecutorType.CLAUDE) == (
-            "claude-opus-4-6",
+            "claude-opus-4-7",
             "claude-sonnet-4-6",
         )
 
@@ -334,9 +334,9 @@ class TestWorkflowModels:
             name="review",
             executor=ExecutorType.CLAUDE,
             prompt_template="{task_prompt}",
-            model=SupportedModel.CLAUDE_OPUS_4_6,
+            model=SupportedModel.CLAUDE_OPUS_4_7,
         )
-        assert sd.model == SupportedModel.CLAUDE_OPUS_4_6
+        assert sd.model == SupportedModel.CLAUDE_OPUS_4_7
 
     def test_stage_definition_rejects_incompatible_model(self):
         with pytest.raises(Exception, match="Unsupported model 'gpt-5.4' for executor 'gemini'"):
