@@ -745,6 +745,18 @@ def _fake_build_honestly_blocked(executor, prompt_path, result_json_path, model,
     return [sys.executable, "-c", script]
 
 
+def _fake_build_completed_no_changes(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
+    """Write a result.json declaring no changes were needed."""
+    script = (
+        "import json; "
+        "json.dump("
+        '{"summary":"audit found no issues","status":"completed_no_changes",'
+        '"files_changed":[],"commits":[],"tests":[],"next_steps":[]}, '
+        f"open('{result_json_path}', 'w'))"
+    )
+    return [sys.executable, "-c", script]
+
+
 class TestSilentFailureDetection:
     def test_empty_completed_is_flagged_as_failed(self, supervisor, git_repo):
         with patch(
@@ -802,3 +814,30 @@ class TestSilentFailureDetection:
         assert rec.status == WorkerStatus.FAILED
         assert "blocked" in (rec.error_message or "").lower()
         assert "sandbox denied" in (rec.error_message or "").lower()
+
+    def test_completed_no_changes_is_success(self, supervisor, git_repo):
+        with patch(
+            "codefleet.supervisor.build_worker_command",
+            side_effect=_fake_build_completed_no_changes,
+        ):
+            stages = [
+                {
+                    "name": "audit",
+                    "executor": "codex",
+                    "prompt_template": "{task_prompt}",
+                    "worktree_strategy": "new",
+                    "depends_on": [],
+                },
+            ]
+            result = supervisor.create_workflow(
+                name="no-changes",
+                repo_path=str(git_repo),
+                task_prompt="x",
+                stages=stages,
+            )
+            wf = _wait_workflow_terminal(supervisor, result.workflow_id)
+
+        assert wf.status == WorkflowStatus.SUCCEEDED
+        worker_id = wf.stage_summary[0]["worker_id"]
+        rec = supervisor.store.get_worker(worker_id)
+        assert rec.status == WorkerStatus.SUCCEEDED

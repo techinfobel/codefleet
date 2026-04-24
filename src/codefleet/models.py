@@ -57,6 +57,7 @@ class WorkerStatus(str, enum.Enum):
 
 class ResultStatus(str, enum.Enum):
     COMPLETED = "completed"
+    COMPLETED_NO_CHANGES = "completed_no_changes"
     BLOCKED = "blocked"
 
 

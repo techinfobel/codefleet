@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from collections import deque
@@ -125,6 +126,11 @@ class FleetSupervisor:
         self.heartbeat_interval = heartbeat_interval
 
         self._active_workers: dict[str, WorkerProcess] = {}
+        # Serializes terminal-status transitions for a single worker so a
+        # cancel request can't race with the monitor thread's completion
+        # callback. RLock because _on_worker_complete may call into methods
+        # that also take this lock (via the workflow callback chain).
+        self._worker_state_lock = threading.RLock()
         self._workflow_engine = None
         self._recover_running_workers()
 
@@ -650,6 +656,11 @@ class FleetSupervisor:
         Returns ``(committed, error_message)``.  A missing/clean worktree is not
         an error; git command failures are returned so completion can fail
         loudly instead of silently losing work.
+
+        The salvage commit bypasses pre-commit hooks and GPG signing so that a
+        user's local git config can't turn a successful agent run into a
+        failure.  Staging and committing are scoped to explicit user paths so
+        ``.codefleet/`` can never leak into the commit.
         """
         worktree = Path(record.worktree_path)
         if not worktree.exists():
@@ -672,11 +683,13 @@ class FleetSupervisor:
             detail = (status_result.stderr or status_result.stdout).strip()
             return False, f"git status failed while checking uncommitted work: {detail}"
 
-        if not self._status_user_paths(status_result.stdout):
+        user_paths = self._status_user_paths(status_result.stdout)
+        if not user_paths:
             return False, None
 
+        # Stage only user paths — never touch .codefleet/.
         add_result = subprocess.run(
-            ["git", "add", "-A", "--", "."],
+            ["git", "add", "--", *user_paths],
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -686,17 +699,8 @@ class FleetSupervisor:
             detail = (add_result.stderr or add_result.stdout).strip()
             return False, f"git add failed while preserving worker changes: {detail}"
 
-        # .codefleet contains prompts/results and must never be committed.
-        subprocess.run(
-            ["git", "reset", "-q", "--", ".codefleet"],
-            cwd=str(worktree),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-
         staged_result = subprocess.run(
-            ["git", "diff", "--cached", "--name-only"],
+            ["git", "diff", "--cached", "--name-only", "--", *user_paths],
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -712,13 +716,6 @@ class FleetSupervisor:
             if p.strip() and not self._is_codefleet_internal_path(p.strip())
         ]
         if not staged_user_paths:
-            subprocess.run(
-                ["git", "reset", "-q"],
-                cwd=str(worktree),
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
             return False, None
 
         env = os.environ.copy()
@@ -727,8 +724,19 @@ class FleetSupervisor:
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
 
+        # -c commit.gpgsign=false: ignore user's global signing config.
+        # --no-verify: skip pre-commit / commit-msg hooks; the agent already
+        #   ran tests and we're salvaging work — hook failures shouldn't
+        #   discard a successful run.
+        # -- <paths>: commit only the explicit user paths. This is the
+        #   primary defense against .codefleet/ pollution even if something
+        #   else in the index is stray.
         commit_result = subprocess.run(
-            ["git", "commit", "-m", message],
+            [
+                "git", "-c", "commit.gpgsign=false",
+                "commit", "--no-verify", "-m", message,
+                "--", *staged_user_paths,
+            ],
             cwd=str(worktree),
             capture_output=True,
             text=True,
@@ -907,6 +915,11 @@ class FleetSupervisor:
                 f"Agent reported status=blocked: {reason[:500]}",
             )
 
+        # Agent explicitly declared no changes were needed — trust it.
+        # Silent-failure detection only applies to bare status=completed.
+        if result.status.value == "completed_no_changes":
+            return ("ok", "Worker completed with no changes required")
+
         _, commit_error = self._commit_uncommitted_changes(
             record, "auto-commit: uncommitted agent work"
         )
@@ -926,7 +939,9 @@ class FleetSupervisor:
                     "failed",
                     "Agent claimed status=completed but produced no commits "
                     "and no file changes in git — likely a silent failure. "
-                    "Check stdout/stderr for sandbox, permission, or auth errors.",
+                    "If no changes were needed, use status=completed_no_changes "
+                    "instead. Check stdout/stderr for sandbox, permission, or "
+                    "auth errors.",
                 )
             self._normalize_result_git_metadata(
                 record, result, git_commits, git_files
@@ -945,7 +960,9 @@ class FleetSupervisor:
                 "failed",
                 "Agent claimed status=completed but produced no commits "
                 "and no file changes — likely a silent failure. "
-                "Check stdout/stderr for sandbox, permission, or auth errors.",
+                "If no changes were needed, use status=completed_no_changes "
+                "instead. Check stdout/stderr for sandbox, permission, or "
+                "auth errors.",
             )
 
         return ("ok", "Worker completed successfully")
@@ -969,6 +986,11 @@ class FleetSupervisor:
         """Callback when a worker process completes."""
         record = self.store.get_worker(worker_id)
         if record is None:
+            return
+        # Fast path: if the worker was cancelled while we were still running,
+        # don't do any result processing or overwrite the terminal state.
+        if record.status.is_terminal:
+            self._active_workers.pop(worker_id, None)
             return
 
         now = time.time()
@@ -1030,7 +1052,15 @@ class FleetSupervisor:
                     )
                 )
 
-        record = self.store.update_worker(worker_id, **update)
+        # Commit the terminal transition under the lock so a concurrent
+        # cancel_worker can't fight us for it. If the worker was cancelled
+        # during the IO above, honor that and don't overwrite.
+        with self._worker_state_lock:
+            current = self.store.get_worker(worker_id)
+            if current is None or current.status.is_terminal:
+                self._active_workers.pop(worker_id, None)
+                return
+            record = self.store.update_worker(worker_id, **update)
 
         self._active_workers.pop(worker_id, None)
         if record and record.workflow_id is not None and record.stage_index is not None:
@@ -1143,25 +1173,29 @@ class FleetSupervisor:
         return payload
 
     def cancel_worker(self, worker_id: str) -> WorkerStatusPayload:
-        record = self.store.get_worker(worker_id)
-        if record is None:
-            raise ValueError(f"Worker not found: {worker_id}")
+        # Serialize against _on_worker_complete: without the lock, a monitor
+        # thread can flip the worker to SUCCEEDED between the is_terminal
+        # check and the update below, and we'd overwrite it with CANCELLED.
+        with self._worker_state_lock:
+            record = self.store.get_worker(worker_id)
+            if record is None:
+                raise ValueError(f"Worker not found: {worker_id}")
 
-        if record.status.is_terminal:
-            raise ValueError(
-                f"Worker {worker_id} is already terminal ({record.status.value})"
+            if record.status.is_terminal:
+                raise ValueError(
+                    f"Worker {worker_id} is already terminal ({record.status.value})"
+                )
+
+            proc = self._active_workers.pop(worker_id, None)
+            if proc:
+                proc.cancel()
+
+            record = self.store.update_worker(
+                worker_id,
+                status=WorkerStatus.CANCELLED,
+                ended_at=time.time(),
+                error_message="Cancelled by user",
             )
-
-        proc = self._active_workers.pop(worker_id, None)
-        if proc:
-            proc.cancel()
-
-        record = self.store.update_worker(
-            worker_id,
-            status=WorkerStatus.CANCELLED,
-            ended_at=time.time(),
-            error_message="Cancelled by user",
-        )
 
         return WorkerStatusPayload.from_record(record)
 

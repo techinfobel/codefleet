@@ -52,7 +52,7 @@ def write_result_schema(path: Path) -> None:
             },
             "status": {
                 "type": "string",
-                "enum": ["completed", "blocked"],
+                "enum": ["completed", "completed_no_changes", "blocked"],
             },
         },
         "required": [
@@ -96,6 +96,14 @@ _SHARED_INSTRUCTIONS = (
     "  4. Put the full commit hashes in `commits`.\n"
     "  5. Set `status` to \"completed\".\n"
     "\n"
+    "If the task is already satisfied and genuinely requires no code changes "
+    "(e.g. an audit that found nothing, an idempotent refactor already applied, "
+    "a requirement already met):\n"
+    "  - Set `status` to \"completed_no_changes\".\n"
+    "  - In `summary`, describe what you checked and why no changes were "
+    "needed.\n"
+    "  - Leave `commits` and `files_changed` as [].\n"
+    "\n"
     "If you cannot complete the task — sandbox denial, missing tool, permission "
     "error, authentication failure, unclear requirements, or any other blocker — "
     "DO NOT exit with an empty success. Instead:\n"
@@ -104,9 +112,10 @@ _SHARED_INSTRUCTIONS = (
     "failed, the error message, what you tried).\n"
     "  - Leave `commits` and `files_changed` as [] if you made none.\n"
     "\n"
-    "A silent exit 0 with empty `commits` and empty `files_changed` is treated "
-    "as a failure by the supervisor. An honest `blocked` is always better than "
-    "a misleading `completed`."
+    "A `completed` status with empty `commits` and empty `files_changed` is "
+    "treated as a silent failure by the supervisor. If you truly did no work, "
+    "use `completed_no_changes` (success) or `blocked` (failure) — never a "
+    "bare `completed` with nothing to show."
 )
 
 
@@ -128,7 +137,7 @@ def _stream_result_instruction(prompt_path: Path, base_ref: str) -> str:
           '"tests": [{"command": "string", "status": "passed|failed|not_run", '
           '"details": "string"}], '
           '"commits": ["hash"], "next_steps": ["string"], '
-          '"status": "completed|blocked"}. '
+          '"status": "completed|completed_no_changes|blocked"}. '
           "Do not wrap the JSON in markdown."
     )
 
