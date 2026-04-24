@@ -13,8 +13,10 @@ from codefleet.supervisor import FleetSupervisor
 def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     script = (
         "import json; "
+        "open('server_output.txt', 'a').write('server worker output\\n'); "
         "json.dump("
-        '{"summary":"done","status":"completed","files_changed":[],"tests":[]}, '
+        '{"summary":"done","status":"completed",'
+        '"files_changed":["server_output.txt"],"tests":[]}, '
         f"open('{result_json_path}', 'w'))"
     )
     return [sys.executable, "-c", script]

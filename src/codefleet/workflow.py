@@ -24,6 +24,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_TERMINAL_WORKFLOW_STATUSES = {
+    WorkflowStatus.SUCCEEDED,
+    WorkflowStatus.FAILED,
+    WorkflowStatus.CANCELLED,
+}
+
+
+class WorkflowStartAborted(Exception):
+    """Raised internally when a stage should no longer be launched."""
+
 
 class WorkflowEngine:
     def __init__(self, supervisor: FleetSupervisor):
@@ -118,30 +128,39 @@ class WorkflowEngine:
         return [WorkflowStatusPayload.from_record(r) for r in records]
 
     def cancel_workflow(self, workflow_id: str) -> WorkflowStatusPayload:
-        record = self.supervisor.store.get_workflow(workflow_id)
-        if record is None:
-            raise ValueError(f"Workflow not found: {workflow_id}")
-        if record.status in {WorkflowStatus.SUCCEEDED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED}:
-            raise ValueError(f"Workflow {workflow_id} is already terminal ({record.status.value})")
+        with self._lock:
+            record = self.supervisor.store.get_workflow(workflow_id)
+            if record is None:
+                raise ValueError(f"Workflow not found: {workflow_id}")
+            if record.status in _TERMINAL_WORKFLOW_STATUSES:
+                raise ValueError(
+                    f"Workflow {workflow_id} is already terminal "
+                    f"({record.status.value})"
+                )
 
-        for idx, state in record.stage_states.items():
-            if not state.status.is_terminal and state.worker_id:
-                try:
-                    self.supervisor.cancel_worker(state.worker_id)
-                except (ValueError, RuntimeError) as e:
-                    logger.debug("Could not cancel worker %s for workflow %s: %s",
-                                 state.worker_id, workflow_id, e)
-                state.status = WorkerStatus.CANCELLED
+            for idx, state in record.stage_states.items():
+                if not state.status.is_terminal:
+                    if state.worker_id:
+                        try:
+                            self.supervisor.cancel_worker(state.worker_id)
+                        except (ValueError, RuntimeError) as e:
+                            logger.debug(
+                                "Could not cancel worker %s for workflow %s: %s",
+                                state.worker_id,
+                                workflow_id,
+                                e,
+                            )
+                    state.status = WorkerStatus.CANCELLED
 
-        record = self.supervisor.store.update_workflow(
-            workflow_id,
-            status=WorkflowStatus.CANCELLED,
-            stage_states=record.stage_states,
-            completed_at=time.time(),
-            error_message="Cancelled by user",
-        )
+            record = self.supervisor.store.update_workflow(
+                workflow_id,
+                status=WorkflowStatus.CANCELLED,
+                stage_states=record.stage_states,
+                completed_at=time.time(),
+                error_message="Cancelled by user",
+            )
 
-        return WorkflowStatusPayload.from_record(record)
+            return WorkflowStatusPayload.from_record(record)
 
     def collect_workflow_result(
         self,
@@ -239,6 +258,13 @@ class WorkflowEngine:
         for idx in stages_to_start:
             try:
                 self._start_stage(workflow_id, idx)
+            except WorkflowStartAborted:
+                logger.info(
+                    "Skipped stage %d of workflow %s because the workflow is terminal",
+                    idx,
+                    workflow_id,
+                )
+                return
             except Exception as e:
                 logger.exception(
                     "Failed to start stage %d of workflow %s", idx, workflow_id
@@ -266,6 +292,8 @@ class WorkflowEngine:
         with self._lock:
             record = self.supervisor.store.get_workflow(workflow_id)
             if record is None:
+                return
+            if record.status in _TERMINAL_WORKFLOW_STATUSES:
                 return
             statuses = [
                 record.stage_states.get(i, StageState()).status
@@ -295,6 +323,8 @@ class WorkflowEngine:
         """
         record = self.supervisor.store.get_workflow(workflow_id)
         if record is None:
+            return None
+        if record.status in _TERMINAL_WORKFLOW_STATUSES:
             return None
 
         worker_record = self.supervisor.store.get_worker(worker_id)
@@ -366,6 +396,15 @@ class WorkflowEngine:
             record = self.supervisor.store.get_workflow(workflow_id)
             if record is None:
                 raise ValueError(f"Workflow not found: {workflow_id}")
+        if record.status in _TERMINAL_WORKFLOW_STATUSES:
+            raise WorkflowStartAborted(
+                f"Workflow {workflow_id} is already terminal ({record.status.value})"
+            )
+        state = record.stage_states.get(stage_index, StageState())
+        if state.status == WorkerStatus.CANCELLED:
+            raise WorkflowStartAborted(
+                f"Stage {stage_index} of workflow {workflow_id} was cancelled"
+            )
         stage_def = record.stages[stage_index]
 
         rendered_prompt = self._render_prompt(record, stage_index)

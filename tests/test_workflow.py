@@ -33,9 +33,10 @@ def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort
     """Build a Python script that writes a valid result.json and exits."""
     script = (
         "import json; "
+        "open('agent_output.txt', 'a').write('stage done\\n'); "
         "json.dump("
         '{"summary":"stage done","status":"completed",'
-        '"files_changed":["a.py"],"tests":[],"next_steps":["review"]}, '
+        '"files_changed":["agent_output.txt"],"tests":[],"next_steps":["review"]}, '
         f"open('{result_json_path}', 'w'))"
     )
     return [sys.executable, "-c", script]
@@ -464,6 +465,42 @@ class TestCancelWorkflow:
         time.sleep(0.5)
         wf = supervisor.cancel_workflow(result.workflow_id)
         assert wf.status == WorkflowStatus.CANCELLED
+        assert all(s["status"] == "cancelled" for s in wf.stage_summary)
+
+    @_patch_build_sleep
+    def test_cancel_marks_pending_dependents_cancelled(
+        self, mock_build, supervisor, git_repo
+    ):
+        """Cancellation should not leave never-started downstream stages pending."""
+        stages = [
+            {
+                "name": "slow-stage",
+                "executor": "codex",
+                "prompt_template": "Sleep forever",
+                "worktree_strategy": "new",
+                "depends_on": [],
+            },
+            {
+                "name": "dependent",
+                "executor": "codex",
+                "prompt_template": "Should never start",
+                "worktree_strategy": "new",
+                "depends_on": [0],
+            },
+        ]
+        result = supervisor.create_workflow(
+            name="cancel-pending-test",
+            repo_path=str(git_repo),
+            task_prompt="Slow task",
+            stages=stages,
+            base_ref="HEAD",
+        )
+
+        time.sleep(0.5)
+        wf = supervisor.cancel_workflow(result.workflow_id)
+        assert wf.status == WorkflowStatus.CANCELLED
+        assert wf.stage_summary[0]["status"] == "cancelled"
+        assert wf.stage_summary[1]["status"] == "cancelled"
 
     @_patch_build
     def test_cancel_terminal_workflow_fails(self, mock_build, supervisor, git_repo):

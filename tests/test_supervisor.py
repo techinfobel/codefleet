@@ -157,6 +157,7 @@ class TestCreateWorkerIntegration:
         """Full lifecycle: create -> running -> succeeded -> collect -> cleanup."""
         script = (
             "import json; "
+            "open('fake.py', 'a').write('worker output\\n'); "
             "json.dump("
             '{"summary":"done","status":"completed",'
             '"files_changed":["fake.py"],"commits":[],"tests":[]}, '
@@ -202,6 +203,66 @@ class TestCreateWorkerIntegration:
         assert cleanup["worker_dir_removed"] is True
         assert cleanup["errors"] == []
 
+    def test_success_auto_commits_and_normalizes_result(self, supervisor, git_repo):
+        """Valid results are still checked against actual git state."""
+        script = (
+            "import json; "
+            "open('actual.py', 'a').write('real work\\n'); "
+            "json.dump("
+            '{"summary":"done","status":"completed",'
+            '"files_changed":["hallucinated.py"],"commits":[],"tests":[]}, '
+            "open('__RESULT_PATH__', 'w'))"
+        )
+        payload = self._create_worker_with_script(
+            supervisor, git_repo, script, task_name="normalize-result"
+        )
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = supervisor.get_worker_status(payload.worker_id)
+            if status.status.is_terminal:
+                break
+            time.sleep(0.2)
+
+        status = supervisor.get_worker_status(payload.worker_id)
+        assert status.status == WorkerStatus.SUCCEEDED
+
+        result = supervisor.collect_worker_result(payload.worker_id)["result"]
+        assert result["files_changed"] == ["actual.py"]
+        assert len(result["commits"]) == 1
+
+        log = subprocess.run(
+            ["git", "-C", status.worktree_path, "log", "--oneline", "-1"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "auto-commit: uncommitted agent work" in log.stdout
+
+    def test_fake_self_reported_changes_fail(self, supervisor, git_repo):
+        """A completed result cannot claim changed files that git cannot see."""
+        script = (
+            "import json; "
+            "json.dump("
+            '{"summary":"claimed work","status":"completed",'
+            '"files_changed":["fake.py"],"commits":[],"tests":[]}, '
+            "open('__RESULT_PATH__', 'w'))"
+        )
+        payload = self._create_worker_with_script(
+            supervisor, git_repo, script, task_name="fake-self-report"
+        )
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            status = supervisor.get_worker_status(payload.worker_id)
+            if status.status.is_terminal:
+                break
+            time.sleep(0.2)
+
+        status = supervisor.get_worker_status(payload.worker_id)
+        assert status.status == WorkerStatus.FAILED
+        assert "no file changes in git" in (status.error_message or "")
+
     def test_failed_worker_no_result(self, supervisor, git_repo):
         """Worker that exits 0 but writes no result.json should fail."""
         script = "print('did nothing useful')"
@@ -235,6 +296,7 @@ class TestCreateWorkerIntegration:
         script = (
             "import json, time; "
             "time.sleep(2.5); "
+            "open('fake.py', 'a').write('heartbeat output\\n'); "
             "json.dump("
             '{"summary":"done","status":"completed",'
             '"files_changed":["fake.py"],"commits":[],"tests":[]}, '
@@ -327,7 +389,9 @@ class TestCreateWorkerIntegration:
         )
         if executor == "gemini":
             script = (
-                "import json; "
+                "import json, os; "
+                "os.makedirs('src', exist_ok=True); "
+                "open('src/app.py', 'a').write('stdout materialized\\n'); "
                 "print('Loaded cached credentials.', flush=True); "
                 f"payload = {payload_json!r}; "
                 "print(json.dumps({"
@@ -336,7 +400,9 @@ class TestCreateWorkerIntegration:
             )
         else:
             script = (
-                "import json; "
+                "import json, os; "
+                "os.makedirs('src', exist_ok=True); "
+                "open('src/app.py', 'a').write('stdout materialized\\n'); "
                 f"payload = {payload_json!r}; "
                 "print(json.dumps({"
                 "'type': 'assistant', "

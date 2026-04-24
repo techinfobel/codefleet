@@ -1,6 +1,7 @@
 """Tests for store.py - SQLite worker store with real database operations."""
 
 import json
+import threading
 import time
 
 import pytest
@@ -239,6 +240,47 @@ class TestWorkerStore:
         assert r.status == WorkerStatus.SUCCEEDED
         assert r.exit_code == 0
         assert r.ended_at > r.started_at
+
+    def test_concurrent_updates_are_serialized(self, db_path):
+        """Monitor threads can update SQLite state without lock errors."""
+        store = WorkerStore(db_path)
+        errors = []
+        try:
+            for i in range(20):
+                store.insert_worker(
+                    _make_record(
+                        worker_id=f"w_concurrent_{i}",
+                        status=WorkerStatus.RUNNING,
+                    )
+                )
+
+            def update_worker(index: int) -> None:
+                try:
+                    for attempt in range(10):
+                        store.update_worker(
+                            f"w_concurrent_{index}",
+                            last_heartbeat_at=time.time(),
+                            last_activity_at=time.time(),
+                            heartbeat_message=f"heartbeat {attempt}",
+                        )
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=update_worker, args=(i,))
+                for i in range(20)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            assert errors == []
+            for i in range(20):
+                record = store.get_worker(f"w_concurrent_{i}")
+                assert record.heartbeat_message == "heartbeat 9"
+        finally:
+            store.close()
 
 
 class TestExecutorField:

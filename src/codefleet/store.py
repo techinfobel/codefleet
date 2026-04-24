@@ -115,6 +115,7 @@ class WorkerStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        self._write_lock = threading.RLock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -122,73 +123,80 @@ class WorkerStore:
             self._local.conn = sqlite3.connect(str(self.db_path), timeout=10)
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA busy_timeout=30000")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
         return self._local.conn
 
     def _init_db(self):
-        conn = self._get_conn()
-        conn.execute(_CREATE_TABLE)
-        conn.execute(_CREATE_WORKFLOWS_TABLE)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        for migration in _MIGRATIONS:
-            try:
-                conn.execute(migration)
-            except sqlite3.OperationalError as e:
-                msg = str(e).lower()
-                if "duplicate column" in msg or "already exists" in msg or "no such column" in msg:
-                    logger.debug("Migration already applied: %s", migration[:60])
-                else:
-                    raise
-        conn.commit()
+        with self._write_lock:
+            conn = self._get_conn()
+            conn.execute(_CREATE_TABLE)
+            conn.execute(_CREATE_WORKFLOWS_TABLE)
+            for idx in _CREATE_INDEXES:
+                conn.execute(idx)
+            for migration in _MIGRATIONS:
+                try:
+                    conn.execute(migration)
+                except sqlite3.OperationalError as e:
+                    msg = str(e).lower()
+                    if (
+                        "duplicate column" in msg
+                        or "already exists" in msg
+                        or "no such column" in msg
+                    ):
+                        logger.debug("Migration already applied: %s", migration[:60])
+                    else:
+                        raise
+            conn.commit()
 
     # --- Worker CRUD ---
 
     def insert_worker(self, record: WorkerRecord) -> None:
-        conn = self._get_conn()
-        try:
-            conn.execute(
-                _INSERT_SQL,
-                (
-                    record.worker_id,
-                    record.task_name,
-                    record.repo_path,
-                    record.branch_name,
-                    record.worktree_path,
-                    record.worker_dir,
-                    record.model,
-                    record.profile,
-                    record.status.value,
-                    record.created_at,
-                    record.started_at,
-                    record.ended_at,
-                    record.last_heartbeat_at,
-                    record.last_activity_at,
-                    record.timeout_seconds,
-                    record.pid,
-                    record.exit_code,
-                    record.command_json,
-                    record.prompt,
-                    record.result_json_path,
-                    record.stdout_path,
-                    record.stderr_path,
-                    record.prompt_path,
-                    record.meta_path,
-                    record.retry_count,
-                    record.parent_worker_id,
-                    json.dumps(record.tags),
-                    json.dumps(record.metadata),
-                    record.error_message,
-                    record.heartbeat_message,
-                    record.executor.value,
-                    record.workflow_id,
-                    record.stage_index,
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    _INSERT_SQL,
+                    (
+                        record.worker_id,
+                        record.task_name,
+                        record.repo_path,
+                        record.branch_name,
+                        record.worktree_path,
+                        record.worker_dir,
+                        record.model,
+                        record.profile,
+                        record.status.value,
+                        record.created_at,
+                        record.started_at,
+                        record.ended_at,
+                        record.last_heartbeat_at,
+                        record.last_activity_at,
+                        record.timeout_seconds,
+                        record.pid,
+                        record.exit_code,
+                        record.command_json,
+                        record.prompt,
+                        record.result_json_path,
+                        record.stdout_path,
+                        record.stderr_path,
+                        record.prompt_path,
+                        record.meta_path,
+                        record.retry_count,
+                        record.parent_worker_id,
+                        json.dumps(record.tags),
+                        json.dumps(record.metadata),
+                        record.error_message,
+                        record.heartbeat_message,
+                        record.executor.value,
+                        record.workflow_id,
+                        record.stage_index,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_worker(self, worker_id: str) -> Optional[WorkerRecord]:
         conn = self._get_conn()
@@ -239,32 +247,33 @@ class WorkerStore:
     # --- Workflow CRUD ---
 
     def insert_workflow(self, record: WorkflowRecord) -> None:
-        conn = self._get_conn()
         stages_json = json.dumps([_dump_model(stage) for stage in record.stages])
         states_json = json.dumps(
             {str(k): _dump_model(state) for k, state in record.stage_states.items()}
         )
-        try:
-            conn.execute(
-                _INSERT_WORKFLOW_SQL,
-                (
-                    record.workflow_id,
-                    record.name,
-                    record.status.value,
-                    record.repo_path,
-                    record.base_ref,
-                    record.task_prompt,
-                    stages_json,
-                    states_json,
-                    record.created_at,
-                    record.completed_at,
-                    record.error_message,
-                ),
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        with self._write_lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    _INSERT_WORKFLOW_SQL,
+                    (
+                        record.workflow_id,
+                        record.name,
+                        record.status.value,
+                        record.repo_path,
+                        record.base_ref,
+                        record.task_prompt,
+                        stages_json,
+                        states_json,
+                        record.created_at,
+                        record.completed_at,
+                        record.error_message,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     def get_workflow(self, workflow_id: str) -> Optional[WorkflowRecord]:
         conn = self._get_conn()
@@ -328,31 +337,36 @@ class WorkerStore:
         """
         if json_columns is None:
             json_columns = {}
-        conn = self._get_conn()
-        sets: list[str] = []
-        vals: list = []
-        for key, value in updates.items():
-            col = json_columns.get(key, key)
-            if col in json_columns.values():
-                # Serialise JSON columns, handling nested Pydantic models
-                if isinstance(value, dict):
-                    value = json.dumps(
-                        {str(k): _dump_model(v) for k, v in value.items()}
-                    )
-                elif isinstance(value, list):
-                    value = json.dumps([_dump_model(v) for v in value])
-                else:
-                    value = json.dumps(value)
-            elif isinstance(value, enum.Enum):
-                value = value.value
-            sets.append(f"{col} = ?")
-            vals.append(value)
-        vals.append(pk_val)
-        conn.execute(
-            f"UPDATE {table} SET {', '.join(sets)} WHERE {pk_col} = ?",
-            vals,
-        )
-        conn.commit()
+        with self._write_lock:
+            conn = self._get_conn()
+            sets: list[str] = []
+            vals: list = []
+            for key, value in updates.items():
+                col = json_columns.get(key, key)
+                if col in json_columns.values():
+                    # Serialise JSON columns, handling nested Pydantic models
+                    if isinstance(value, dict):
+                        value = json.dumps(
+                            {str(k): _dump_model(v) for k, v in value.items()}
+                        )
+                    elif isinstance(value, list):
+                        value = json.dumps([_dump_model(v) for v in value])
+                    else:
+                        value = json.dumps(value)
+                elif isinstance(value, enum.Enum):
+                    value = value.value
+                sets.append(f"{col} = ?")
+                vals.append(value)
+            vals.append(pk_val)
+            try:
+                conn.execute(
+                    f"UPDATE {table} SET {', '.join(sets)} WHERE {pk_col} = ?",
+                    vals,
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
     @staticmethod
     def _build_list_query(

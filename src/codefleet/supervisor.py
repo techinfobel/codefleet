@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -305,7 +306,13 @@ class FleetSupervisor:
         meta_path = worker_dir / "meta.json"
 
         worktree_path = worker_dir / "worktree"
-        create_worktree(repo, worktree_path, branch_name, base_ref)
+        try:
+            create_worktree(repo, worktree_path, branch_name, base_ref)
+        except Exception:
+            self._cleanup_failed_creation(
+                repo, worktree_path, branch_name, worker_dir
+            )
+            raise
 
         # Resolve base commit hash. Every stage gets its own fresh worktree
         # off its base_ref, so this is also the commit the agent's work
@@ -320,7 +327,11 @@ class FleetSupervisor:
             if base_result.returncode == 0:
                 base_commit = base_result.stdout.strip()
         except Exception:
-            pass
+            logger.debug(
+                "Failed to resolve base commit for worker %s",
+                worker_id,
+                exc_info=True,
+            )
 
         meta = {
             "worker_id": worker_id,
@@ -504,15 +515,21 @@ class FleetSupervisor:
         result_path = Path(record.result_json_path)
 
         try:
-            parse_result_file(result_path)
+            parsed_result = parse_result_file(result_path)
         except (FileNotFoundError, ValueError) as e:
             recovery_mode = self._materialize_or_salvage_result(record, e)
             if recovery_mode == "materialized":
-                update["status"] = WorkerStatus.SUCCEEDED
-                update["heartbeat_message"] = (
-                    "Recovered completed worker after supervisor restart via parsed stdout result"
+                parsed_result = parse_result_file(result_path)
+                update.update(
+                    self._result_completion_update(
+                        record,
+                        parsed_result,
+                        (
+                            "Recovered completed worker after supervisor restart "
+                            "via parsed stdout result"
+                        ),
+                    )
                 )
-                update["error_message"] = None
             elif recovery_mode == "salvaged":
                 update["status"] = WorkerStatus.SUCCEEDED
                 update["heartbeat_message"] = (
@@ -529,9 +546,12 @@ class FleetSupervisor:
                 )
                 update["heartbeat_message"] = update["error_message"]
         else:
-            update["status"] = WorkerStatus.SUCCEEDED
-            update["heartbeat_message"] = (
-                "Recovered completed worker after supervisor restart"
+            update.update(
+                self._result_completion_update(
+                    record,
+                    parsed_result,
+                    "Recovered completed worker after supervisor restart",
+                )
             )
 
         record = self.store.update_worker(record.worker_id, **update)
@@ -601,6 +621,211 @@ class FleetSupervisor:
             current_id = record.parent_worker_id
         return depth
 
+    @staticmethod
+    def _is_codefleet_internal_path(path: str) -> bool:
+        return path == ".codefleet" or path.startswith(".codefleet/")
+
+    @classmethod
+    def _status_user_paths(cls, status_output: str) -> list[str]:
+        """Extract non-codefleet paths from git status --porcelain output."""
+        paths: list[str] = []
+        for line in status_output.splitlines():
+            if not line.strip():
+                continue
+            raw_path = line[3:].strip() if len(line) > 3 else line.strip()
+            candidates = (
+                raw_path.split(" -> ", 1) if " -> " in raw_path else [raw_path]
+            )
+            for candidate in candidates:
+                path = candidate.strip().strip('"')
+                if path and not cls._is_codefleet_internal_path(path):
+                    paths.append(path)
+        return paths
+
+    def _commit_uncommitted_changes(
+        self, record: WorkerRecord, message: str
+    ) -> tuple[bool, Optional[str]]:
+        """Commit non-internal worktree changes so they survive cleanup.
+
+        Returns ``(committed, error_message)``.  A missing/clean worktree is not
+        an error; git command failures are returned so completion can fail
+        loudly instead of silently losing work.
+        """
+        worktree = Path(record.worktree_path)
+        if not worktree.exists():
+            return False, None
+        if not is_git_repo(worktree):
+            return False, None
+
+        try:
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, f"git status failed while checking uncommitted work: {e}"
+
+        if status_result.returncode != 0:
+            detail = (status_result.stderr or status_result.stdout).strip()
+            return False, f"git status failed while checking uncommitted work: {detail}"
+
+        if not self._status_user_paths(status_result.stdout):
+            return False, None
+
+        add_result = subprocess.run(
+            ["git", "add", "-A", "--", "."],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if add_result.returncode != 0:
+            detail = (add_result.stderr or add_result.stdout).strip()
+            return False, f"git add failed while preserving worker changes: {detail}"
+
+        # .codefleet contains prompts/results and must never be committed.
+        subprocess.run(
+            ["git", "reset", "-q", "--", ".codefleet"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        staged_result = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if staged_result.returncode != 0:
+            detail = (staged_result.stderr or staged_result.stdout).strip()
+            return False, f"git diff --cached failed before auto-commit: {detail}"
+
+        staged_user_paths = [
+            p.strip()
+            for p in staged_result.stdout.splitlines()
+            if p.strip() and not self._is_codefleet_internal_path(p.strip())
+        ]
+        if not staged_user_paths:
+            subprocess.run(
+                ["git", "reset", "-q"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return False, None
+
+        env = os.environ.copy()
+        env.setdefault("GIT_AUTHOR_NAME", "codefleet")
+        env.setdefault("GIT_AUTHOR_EMAIL", "codefleet@example.invalid")
+        env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
+        env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
+
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=str(worktree),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        if commit_result.returncode != 0:
+            detail = (commit_result.stderr or commit_result.stdout).strip()
+            return False, f"git commit failed while preserving worker changes: {detail}"
+
+        logger.info(
+            "Auto-committed %d uncommitted files for worker %s",
+            len(staged_user_paths),
+            record.worker_id,
+        )
+        return True, None
+
+    def _git_changes_since_base(
+        self, record: WorkerRecord
+    ) -> tuple[bool, list[str], list[str], Optional[str]]:
+        """Return (verified, commits, files, error) for work after base_commit."""
+        worktree = Path(record.worktree_path)
+        base_commit = self._read_base_commit(record)
+        if not worktree.exists():
+            return False, [], [], f"worktree not found: {worktree}"
+        if not base_commit:
+            return False, [], [], "base commit unavailable"
+
+        try:
+            log_res = subprocess.run(
+                ["git", "log", "--format=%H", f"{base_commit}..HEAD"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            diff_res = subprocess.run(
+                ["git", "diff", "--name-only", base_commit, "HEAD"],
+                cwd=str(worktree),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return False, [], [], f"git verification failed: {e}"
+
+        if log_res.returncode != 0:
+            detail = (log_res.stderr or log_res.stdout).strip()
+            return False, [], [], f"git log failed: {detail}"
+        if diff_res.returncode != 0:
+            detail = (diff_res.stderr or diff_res.stdout).strip()
+            return False, [], [], f"git diff failed: {detail}"
+
+        commits = [h.strip() for h in log_res.stdout.splitlines() if h.strip()]
+        files = [
+            f.strip()
+            for f in diff_res.stdout.splitlines()
+            if f.strip() and not self._is_codefleet_internal_path(f.strip())
+        ]
+        return True, commits, files, None
+
+    def _normalize_result_git_metadata(
+        self, record: WorkerRecord, result, commits: list[str], files: list[str]
+    ) -> None:
+        """Persist verified git metadata back into result.json for downstream stages."""
+        if result.commits == commits and result.files_changed == files:
+            return
+        try:
+            data = result.model_dump(mode="json")
+            data["commits"] = commits
+            data["files_changed"] = files
+            Path(record.result_json_path).write_text(
+                json.dumps(data, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            logger.debug(
+                "Failed to normalize result git metadata for worker %s",
+                record.worker_id,
+                exc_info=True,
+            )
+
+    def _result_completion_update(
+        self, record: WorkerRecord, result, success_message: str
+    ) -> dict:
+        verdict, verdict_msg = self._verify_worker_produced_work(record, result)
+        if verdict == "ok":
+            return {
+                "status": WorkerStatus.SUCCEEDED,
+                "heartbeat_message": success_message,
+                "error_message": None,
+            }
+        return {
+            "status": WorkerStatus.FAILED,
+            "heartbeat_message": verdict_msg,
+            "error_message": verdict_msg,
+        }
+
     def _salvage_result(self, record: WorkerRecord) -> bool:
         """Check if a worker produced meaningful changes despite invalid result.json.
 
@@ -611,88 +836,40 @@ class FleetSupervisor:
         if not worktree.exists():
             return False
 
-        files_changed: set[str] = set()
-
-        # Read base commit from meta.json
-        base_commit = None
-        meta_path = Path(record.meta_path)
-        try:
-            if meta_path.exists():
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                base_commit = meta.get("base_commit")
-        except Exception:
-            pass
-
-        # Auto-commit any uncommitted changes so they survive worktree cleanup
-        try:
-            status_result = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=str(worktree),
-                capture_output=True, text=True, timeout=10,
-            )
-            if status_result.returncode == 0 and status_result.stdout.strip():
-                uncommitted = [
-                    line[3:].strip()
-                    for line in status_result.stdout.strip().split("\n")
-                    if line.strip() and not line[3:].strip().startswith(".codefleet/")
-                ]
-                if uncommitted:
-                    subprocess.run(
-                        ["git", "add", "--"] + uncommitted,
-                        cwd=str(worktree),
-                        capture_output=True, text=True, timeout=30,
-                    )
-                    subprocess.run(
-                        ["git", "commit", "-m",
-                         "auto-commit: uncommitted agent work (salvaged)"],
-                        cwd=str(worktree),
-                        capture_output=True, text=True, timeout=30,
-                    )
-                    logger.info(
-                        "Auto-committed %d uncommitted files for worker %s",
-                        len(uncommitted),
-                        record.worker_id,
-                    )
-        except Exception:
-            logger.debug(
-                "Auto-commit failed for worker %s",
+        _, commit_error = self._commit_uncommitted_changes(
+            record, "auto-commit: uncommitted agent work (salvaged)"
+        )
+        if commit_error:
+            logger.warning(
+                "Could not salvage worker %s because auto-commit failed: %s",
                 record.worker_id,
-                exc_info=True,
+                commit_error,
             )
-
-        # Re-check committed changes (now includes any auto-committed work)
-        if base_commit:
-            try:
-                result = subprocess.run(
-                    ["git", "diff", "--name-only", base_commit, "HEAD"],
-                    cwd=str(worktree),
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    files_changed.update(
-                        f.strip()
-                        for f in result.stdout.strip().split("\n")
-                        if f.strip()
-                    )
-            except Exception:
-                pass
-
-        # Filter out .codefleet/ internal files
-        files_changed = {
-            f for f in files_changed if not f.startswith(".codefleet/")
-        }
-
-        if not files_changed:
             return False
 
-        # Write a synthetic result.json
+        verified, commits, files_changed, verify_error = (
+            self._git_changes_since_base(record)
+        )
+        if not verified:
+            logger.debug(
+                "Could not verify salvaged git changes for worker %s: %s",
+                record.worker_id,
+                verify_error,
+            )
+            return False
+
+        if not files_changed and not commits:
+            return False
+
         result_path = Path(record.result_json_path)
         salvaged = {
             "summary": (
                 "Worker completed but did not write a valid result.json. "
                 "Changes were detected and salvaged from the worktree."
             ),
-            "files_changed": sorted(files_changed),
+            "files_changed": files_changed,
+            "tests": [],
+            "commits": commits,
             "status": "completed",
             "next_steps": ["Review salvaged changes manually"],
         }
@@ -730,40 +907,39 @@ class FleetSupervisor:
                 f"Agent reported status=blocked: {reason[:500]}",
             )
 
-        worktree = Path(record.worktree_path)
-        base_commit = self._read_base_commit(record)
-        git_commits: list[str] = []
-        git_files: list[str] = []
-        if worktree.exists() and base_commit:
-            try:
-                log_res = subprocess.run(
-                    ["git", "log", "--format=%H", f"{base_commit}..HEAD"],
-                    cwd=str(worktree),
-                    capture_output=True, text=True, timeout=10,
-                )
-                if log_res.returncode == 0:
-                    git_commits = [
-                        h.strip() for h in log_res.stdout.splitlines() if h.strip()
-                    ]
-                diff_res = subprocess.run(
-                    ["git", "diff", "--name-only", base_commit, "HEAD"],
-                    cwd=str(worktree),
-                    capture_output=True, text=True, timeout=10,
-                )
-                if diff_res.returncode == 0:
-                    git_files = [
-                        f.strip() for f in diff_res.stdout.splitlines()
-                        if f.strip() and not f.strip().startswith(".codefleet/")
-                    ]
-            except (subprocess.TimeoutExpired, OSError):
-                logger.debug(
-                    "Git verification failed for worker %s",
-                    record.worker_id,
-                    exc_info=True,
-                )
+        _, commit_error = self._commit_uncommitted_changes(
+            record, "auto-commit: uncommitted agent work"
+        )
+        if commit_error:
+            return (
+                "failed",
+                "Agent produced uncommitted changes, but codefleet could not "
+                f"commit them safely: {commit_error}",
+            )
 
-        produced_commits = bool(result.commits) or bool(git_commits)
-        produced_files = bool(result.files_changed) or bool(git_files)
+        verified, git_commits, git_files, verify_error = self._git_changes_since_base(
+            record
+        )
+        if verified:
+            if not git_commits and not git_files:
+                return (
+                    "failed",
+                    "Agent claimed status=completed but produced no commits "
+                    "and no file changes in git — likely a silent failure. "
+                    "Check stdout/stderr for sandbox, permission, or auth errors.",
+                )
+            self._normalize_result_git_metadata(
+                record, result, git_commits, git_files
+            )
+            return ("ok", "Worker completed successfully")
+
+        logger.debug(
+            "Falling back to self-reported result metadata for worker %s: %s",
+            record.worker_id,
+            verify_error,
+        )
+        produced_commits = bool(result.commits)
+        produced_files = bool(result.files_changed)
         if not produced_commits and not produced_files:
             return (
                 "failed",
@@ -824,11 +1000,14 @@ class FleetSupervisor:
             except (FileNotFoundError, ValueError) as e:
                 recovery_mode = self._materialize_or_salvage_result(record, e)
                 if recovery_mode == "materialized":
-                    update["status"] = WorkerStatus.SUCCEEDED
-                    update["heartbeat_message"] = (
-                        "Worker completed successfully via parsed stdout result"
+                    result = parse_result_file(result_path)
+                    update.update(
+                        self._result_completion_update(
+                            record,
+                            result,
+                            "Worker completed successfully via parsed stdout result",
+                        )
                     )
-                    update["error_message"] = None
                 elif recovery_mode == "salvaged":
                     update["status"] = WorkerStatus.SUCCEEDED
                     update["error_message"] = (
@@ -843,17 +1022,13 @@ class FleetSupervisor:
                     update["error_message"] = f"Result validation failed: {e}"
                     update["heartbeat_message"] = f"Result validation failed: {e}"
             else:
-                verdict, verdict_msg = self._verify_worker_produced_work(
-                    record, result
+                update.update(
+                    self._result_completion_update(
+                        record,
+                        result,
+                        "Worker completed successfully",
+                    )
                 )
-                update["status"] = (
-                    WorkerStatus.SUCCEEDED
-                    if verdict == "ok"
-                    else WorkerStatus.FAILED
-                )
-                update["heartbeat_message"] = verdict_msg
-                if verdict != "ok":
-                    update["error_message"] = verdict_msg
 
         record = self.store.update_worker(worker_id, **update)
 

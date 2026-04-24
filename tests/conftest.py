@@ -85,6 +85,7 @@ def fake_build_success(executor, prompt_path, result_json_path, model, reasoning
     """
     script = (
         "import json; "
+        "open('fake.py', 'a').write('worker output\\n'); "
         "json.dump("
         '{"summary":"done","status":"completed",'
         '"files_changed":["fake.py"],"commits":[],"next_steps":[]}, '
