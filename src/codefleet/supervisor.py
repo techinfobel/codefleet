@@ -39,7 +39,7 @@ from .worker_runtime import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_GEMINI_MODEL = "gemini-3.1-pro-preview"
 DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-6"
 DEFAULT_REASONING_EFFORT = "max"
@@ -241,8 +241,6 @@ class FleetSupervisor:
         parent_worker_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         stage_index: Optional[int] = None,
-        existing_worktree_path: Optional[str] = None,
-        existing_branch_name: Optional[str] = None,
     ) -> WorkerStatusPayload:
         repo = Path(repo_path).resolve()
 
@@ -306,16 +304,12 @@ class FleetSupervisor:
         stderr_path = worker_dir / "stderr.log"
         meta_path = worker_dir / "meta.json"
 
-        if existing_worktree_path and existing_branch_name:
-            worktree_path = Path(existing_worktree_path)
-            branch_name = existing_branch_name
-            owns_worktree = False
-        else:
-            worktree_path = worker_dir / "worktree"
-            create_worktree(repo, worktree_path, branch_name, base_ref)
-            owns_worktree = True
+        worktree_path = worker_dir / "worktree"
+        create_worktree(repo, worktree_path, branch_name, base_ref)
 
-        # Resolve base commit hash for result salvaging later
+        # Resolve base commit hash. Every stage gets its own fresh worktree
+        # off its base_ref, so this is also the commit the agent's work
+        # builds on. Used later for silent-failure detection and salvage.
         base_commit = None
         try:
             base_result = subprocess.run(
@@ -365,6 +359,7 @@ class FleetSupervisor:
             model=model,
             reasoning_effort=reasoning_effort,
             extra_args=merged_extra_args,
+            base_commit=base_commit,
         )
 
         now = time.time()
@@ -405,10 +400,9 @@ class FleetSupervisor:
         try:
             self.store.insert_worker(record)
         except Exception:
-            if owns_worktree:
-                self._cleanup_failed_creation(
-                    repo, worktree_path, branch_name, worker_dir
-                )
+            self._cleanup_failed_creation(
+                repo, worktree_path, branch_name, worker_dir
+            )
             raise
 
         try:
@@ -432,10 +426,9 @@ class FleetSupervisor:
             )
             pid = worker_proc.start()
         except Exception:
-            if owns_worktree:
-                self._cleanup_failed_creation(
-                    repo, worktree_path, branch_name, worker_dir
-                )
+            self._cleanup_failed_creation(
+                repo, worktree_path, branch_name, worker_dir
+            )
             raise
 
         self._active_workers[worker_id] = worker_proc
@@ -721,6 +714,79 @@ class FleetSupervisor:
             )
             return False
 
+    def _verify_worker_produced_work(
+        self, record: WorkerRecord, result
+    ) -> tuple[str, str]:
+        """Cross-check an agent's self-reported result against git state.
+
+        Returns ("ok", message) if the worker legitimately completed, or
+        ("failed", message) if the worker claimed completed but produced no
+        visible work, or honestly reported blocked.
+        """
+        if result.status.value == "blocked":
+            reason = (result.summary or "").strip() or "no reason given"
+            return (
+                "failed",
+                f"Agent reported status=blocked: {reason[:500]}",
+            )
+
+        worktree = Path(record.worktree_path)
+        base_commit = self._read_base_commit(record)
+        git_commits: list[str] = []
+        git_files: list[str] = []
+        if worktree.exists() and base_commit:
+            try:
+                log_res = subprocess.run(
+                    ["git", "log", "--format=%H", f"{base_commit}..HEAD"],
+                    cwd=str(worktree),
+                    capture_output=True, text=True, timeout=10,
+                )
+                if log_res.returncode == 0:
+                    git_commits = [
+                        h.strip() for h in log_res.stdout.splitlines() if h.strip()
+                    ]
+                diff_res = subprocess.run(
+                    ["git", "diff", "--name-only", base_commit, "HEAD"],
+                    cwd=str(worktree),
+                    capture_output=True, text=True, timeout=10,
+                )
+                if diff_res.returncode == 0:
+                    git_files = [
+                        f.strip() for f in diff_res.stdout.splitlines()
+                        if f.strip() and not f.strip().startswith(".codefleet/")
+                    ]
+            except (subprocess.TimeoutExpired, OSError):
+                logger.debug(
+                    "Git verification failed for worker %s",
+                    record.worker_id,
+                    exc_info=True,
+                )
+
+        produced_commits = bool(result.commits) or bool(git_commits)
+        produced_files = bool(result.files_changed) or bool(git_files)
+        if not produced_commits and not produced_files:
+            return (
+                "failed",
+                "Agent claimed status=completed but produced no commits "
+                "and no file changes — likely a silent failure. "
+                "Check stdout/stderr for sandbox, permission, or auth errors.",
+            )
+
+        return ("ok", "Worker completed successfully")
+
+    @staticmethod
+    def _read_base_commit(record: WorkerRecord) -> Optional[str]:
+        """Read base_commit from a worker's meta.json, if present."""
+        meta_path = Path(record.meta_path)
+        if not meta_path.exists():
+            return None
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        value = meta.get("base_commit")
+        return value if isinstance(value, str) and value else None
+
     def _on_worker_complete(
         self, worker_id: str, exit_code: int, error: Optional[str]
     ):
@@ -754,7 +820,7 @@ class FleetSupervisor:
         else:
             result_path = Path(record.result_json_path)
             try:
-                parse_result_file(result_path)
+                result = parse_result_file(result_path)
             except (FileNotFoundError, ValueError) as e:
                 recovery_mode = self._materialize_or_salvage_result(record, e)
                 if recovery_mode == "materialized":
@@ -777,8 +843,17 @@ class FleetSupervisor:
                     update["error_message"] = f"Result validation failed: {e}"
                     update["heartbeat_message"] = f"Result validation failed: {e}"
             else:
-                update["status"] = WorkerStatus.SUCCEEDED
-                update["heartbeat_message"] = "Worker completed successfully"
+                verdict, verdict_msg = self._verify_worker_produced_work(
+                    record, result
+                )
+                update["status"] = (
+                    WorkerStatus.SUCCEEDED
+                    if verdict == "ok"
+                    else WorkerStatus.FAILED
+                )
+                update["heartbeat_message"] = verdict_msg
+                if verdict != "ok":
+                    update["error_message"] = verdict_msg
 
         record = self.store.update_worker(worker_id, **update)
 

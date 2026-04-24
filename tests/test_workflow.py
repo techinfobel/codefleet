@@ -29,7 +29,7 @@ from codefleet.workflow import WorkflowEngine
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     """Build a Python script that writes a valid result.json and exits."""
     script = (
         "import json; "
@@ -41,12 +41,12 @@ def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort
     return [sys.executable, "-c", script]
 
 
-def _fake_build_fail(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def _fake_build_fail(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     """Build a Python script that exits non-zero."""
     return [sys.executable, "-c", "import sys; sys.exit(1)"]
 
 
-def _fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def _fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     """Build a Python script that sleeps forever."""
     return [sys.executable, "-c", "import time; time.sleep(300)"]
 
@@ -125,12 +125,12 @@ class TestStageSchemaValidation:
             )
 
     def test_incompatible_stage_model_rejected(self):
-        with pytest.raises(Exception, match="Unsupported model 'gpt-5.4' for executor 'gemini'"):
+        with pytest.raises(Exception, match="Unsupported model 'gpt-5.5' for executor 'gemini'"):
             StageDefinition.model_validate({
                 "name": "bad-model",
                 "executor": "gemini",
                 "prompt_template": "x",
-                "model": "gpt-5.4",
+                "model": "gpt-5.5",
             })
 
     def test_stage_model_forwarded_to_create_worker_as_string(self, supervisor, git_repo):
@@ -632,3 +632,136 @@ class TestCleanupWorkflow:
 
         # Cleanup for test teardown
         supervisor.cancel_workflow(result.workflow_id)
+
+
+# ---------------------------------------------------------------------------
+# Stage isolation: INHERIT gives a fresh worktree off the parent's branch
+# ---------------------------------------------------------------------------
+
+
+class TestInheritIsolation:
+    @_patch_build
+    def test_inherit_creates_own_worktree_and_branch(
+        self, mock_build, supervisor, git_repo
+    ):
+        """INHERIT stages must not share .codefleet/ or .git/index with parent."""
+        stages = [
+            {
+                "name": "parent",
+                "executor": "codex",
+                "prompt_template": "{task_prompt}",
+                "worktree_strategy": "new",
+                "depends_on": [],
+            },
+            {
+                "name": "child",
+                "executor": "codex",
+                "prompt_template": "Refine: {stage_0_summary}",
+                "worktree_strategy": "inherit",
+                "depends_on": [0],
+            },
+        ]
+        result = supervisor.create_workflow(
+            name="inherit-isolation",
+            repo_path=str(git_repo),
+            task_prompt="x",
+            stages=stages,
+        )
+        wf = _wait_workflow_terminal(supervisor, result.workflow_id)
+        assert wf.status == WorkflowStatus.SUCCEEDED
+
+        # Fetch workers via the store to inspect worktree + branch paths
+        parent_wid = wf.stage_summary[0]["worker_id"]
+        child_wid = wf.stage_summary[1]["worker_id"]
+        parent_rec = supervisor.store.get_worker(parent_wid)
+        child_rec = supervisor.store.get_worker(child_wid)
+        assert parent_rec.worktree_path != child_rec.worktree_path
+        assert parent_rec.branch_name != child_rec.branch_name
+
+
+# ---------------------------------------------------------------------------
+# Silent-failure detection: agent claims completed but produced no work
+# ---------------------------------------------------------------------------
+
+
+def _fake_build_empty_success(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
+    """Write a result.json claiming completed with no commits and no files."""
+    script = (
+        "import json; "
+        "json.dump("
+        '{"summary":"I did nothing","status":"completed",'
+        '"files_changed":[],"commits":[],"tests":[],"next_steps":[]}, '
+        f"open('{result_json_path}', 'w'))"
+    )
+    return [sys.executable, "-c", script]
+
+
+def _fake_build_honestly_blocked(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
+    """Write a result.json with status=blocked — the honest failure path."""
+    script = (
+        "import json; "
+        "json.dump("
+        '{"summary":"sandbox denied git access","status":"blocked",'
+        '"files_changed":[],"commits":[],"tests":[],"next_steps":[]}, '
+        f"open('{result_json_path}', 'w'))"
+    )
+    return [sys.executable, "-c", script]
+
+
+class TestSilentFailureDetection:
+    def test_empty_completed_is_flagged_as_failed(self, supervisor, git_repo):
+        with patch(
+            "codefleet.supervisor.build_worker_command",
+            side_effect=_fake_build_empty_success,
+        ):
+            stages = [
+                {
+                    "name": "silent",
+                    "executor": "codex",
+                    "prompt_template": "{task_prompt}",
+                    "worktree_strategy": "new",
+                    "depends_on": [],
+                },
+            ]
+            result = supervisor.create_workflow(
+                name="silent-fail",
+                repo_path=str(git_repo),
+                task_prompt="x",
+                stages=stages,
+            )
+            wf = _wait_workflow_terminal(supervisor, result.workflow_id)
+
+        assert wf.status == WorkflowStatus.FAILED
+        worker_id = wf.stage_summary[0]["worker_id"]
+        rec = supervisor.store.get_worker(worker_id)
+        assert rec.status == WorkerStatus.FAILED
+        assert "silent failure" in (rec.error_message or "").lower()
+
+    def test_blocked_status_is_flagged_as_failed(self, supervisor, git_repo):
+        with patch(
+            "codefleet.supervisor.build_worker_command",
+            side_effect=_fake_build_honestly_blocked,
+        ):
+            stages = [
+                {
+                    "name": "blocked",
+                    "executor": "codex",
+                    "prompt_template": "{task_prompt}",
+                    "worktree_strategy": "new",
+                    "depends_on": [],
+                },
+            ]
+            result = supervisor.create_workflow(
+                name="blocked-honest",
+                repo_path=str(git_repo),
+                task_prompt="x",
+                stages=stages,
+            )
+            wf = _wait_workflow_terminal(supervisor, result.workflow_id)
+
+        assert wf.status == WorkflowStatus.FAILED
+        worker_id = wf.stage_summary[0]["worker_id"]
+        rec = supervisor.store.get_worker(worker_id)
+        assert rec.status == WorkerStatus.FAILED
+        assert "blocked" in (rec.error_message or "").lower()
+        assert "sandbox denied" in (rec.error_message or "").lower()

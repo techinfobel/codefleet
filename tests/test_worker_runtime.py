@@ -28,14 +28,26 @@ class TestInstructionCommitRequirement:
     """Both instruction builders must tell agents to commit their work."""
 
     def test_codex_instruction_requires_commit(self, tmp_path):
-        instruction = _codex_result_instruction(tmp_path / "prompt.txt")
+        instruction = _codex_result_instruction(
+            tmp_path / "prompt.txt", base_ref="abc123"
+        )
         assert "commit" in instruction.lower()
         assert "commits" in instruction  # refers to the result field
+        # Verification + honest-failure guidance
+        assert "git log" in instruction
+        assert "abc123" in instruction
+        assert "blocked" in instruction.lower()
+        assert "silent" in instruction.lower() or "empty" in instruction.lower()
 
     def test_stream_instruction_requires_commit(self, tmp_path):
-        instruction = _stream_result_instruction(tmp_path / "prompt.txt")
+        instruction = _stream_result_instruction(
+            tmp_path / "prompt.txt", base_ref="deadbeef"
+        )
         assert "commit" in instruction.lower()
         assert "commits" in instruction  # refers to the result field
+        assert "git log" in instruction
+        assert "deadbeef" in instruction
+        assert "blocked" in instruction.lower()
 
 
 class TestBuildCodexCommand:
@@ -50,7 +62,7 @@ class TestBuildCodexCommand:
         assert "--output-last-message" in cmd
         assert str(result_path) in cmd
         assert "--model" in cmd
-        assert "gpt-5.4" in cmd
+        assert "gpt-5.5" in cmd
         assert str(prompt_path) in cmd[-1]
         assert str(result_path) not in cmd[-1]
 
@@ -160,7 +172,7 @@ class TestBuildWorkerCommand:
             executor="codex",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="gpt-5.4",
+            model="gpt-5.5",
         )
         assert cmd[0] == "codex"
 
@@ -187,7 +199,7 @@ class TestBuildWorkerCommand:
             executor="codex",
             prompt_path=tmp_path / "p.txt",
             result_json_path=tmp_path / "r.json",
-            model="gpt-5.4",
+            model="gpt-5.5",
             reasoning_effort="high",
         )
         assert any("reasoning_effort" in arg for arg in cmd)

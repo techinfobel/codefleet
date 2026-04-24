@@ -64,7 +64,7 @@ def supervisor(tmp_path, git_repo):
     sup = FleetSupervisor(
         base_dir=base_dir,
         allowed_repos=[str(git_repo)],
-        default_model="gpt-5.4",
+        default_model="gpt-5.5",
         default_timeout=60,
         max_concurrent=5,
     )
@@ -77,23 +77,28 @@ def supervisor(tmp_path, git_repo):
 # ---------------------------------------------------------------------------
 
 
-def fake_build_success(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
-    """Return a command that writes a valid result.json and exits 0."""
+def fake_build_success(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
+    """Return a command that writes a valid result.json and exits 0.
+
+    Declares one file changed so the supervisor's silent-failure check
+    treats this as a legitimate completion.
+    """
     script = (
         "import json; "
         "json.dump("
-        '{"summary":"done","status":"completed","files_changed":[],"next_steps":[]}, '
+        '{"summary":"done","status":"completed",'
+        '"files_changed":["fake.py"],"commits":[],"next_steps":[]}, '
         f"open('{result_json_path}', 'w'))"
     )
     return [sys.executable, "-c", script]
 
 
-def fake_build_fail(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def fake_build_fail(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     """Return a command that exits non-zero."""
     return [sys.executable, "-c", "import sys; sys.exit(1)"]
 
 
-def fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     """Return a command that sleeps for 300 seconds."""
     return [sys.executable, "-c", "import time; time.sleep(300)"]
 
@@ -107,7 +112,7 @@ def make_worker_record(worker_id="w_test001", **overrides):
         branch_name=f"codex/test/{worker_id}",
         worktree_path=f"/tmp/fleet/workers/{worker_id}/worktree",
         worker_dir=f"/tmp/fleet/workers/{worker_id}",
-        model="gpt-5.4",
+        model="gpt-5.5",
         status=WorkerStatus.PENDING,
         created_at=time.time(),
         timeout_seconds=600,

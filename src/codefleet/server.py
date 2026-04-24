@@ -177,7 +177,7 @@ def _default_supervisor() -> FleetSupervisor:
     ]
     return FleetSupervisor(
         base_dir=os.environ.get("FLEET_BASE_DIR"),
-        default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.4"),
+        default_model=os.environ.get("FLEET_DEFAULT_MODEL", "gpt-5.5"),
         default_gemini_model=os.environ.get(
             "FLEET_GEMINI_DEFAULT_MODEL", "gemini-3.1-pro-preview"
         ),
@@ -233,7 +233,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         inline hints in create_worker/create_workflow are sufficient."""
         return {
             "codex": {
-                "model": "gpt-5.4",
+                "model": "gpt-5.5",
                 "best_for": [
                     "Terminal/CLI debugging and DevOps scripts",
                     "Code review and PR review (found 500+ zero-days in testing)",
@@ -321,7 +321,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
         - 'claude': multi-file refactoring, architecture, security, first-pass correctness.
 
         Allowed model values:
-        - codex: gpt-5.4
+        - codex: gpt-5.5
         - gemini: gemini-3.1-pro-preview
         - claude: claude-opus-4-7, claude-sonnet-4-6"""
         try:
@@ -436,7 +436,7 @@ def create_server(supervisor: Optional[FleetSupervisor] = None) -> FastMCP:
           worktree_strategy (str, default="new"): "new" = fresh worktree, "inherit" = reuse
               the first dependency's worktree (requires depends_on to be non-empty).
           model (str, optional): Override the executor's default model.
-              Allowed values: gpt-5.4, gemini-3.1-pro-preview, claude-opus-4-7, claude-sonnet-4-6.
+              Allowed values: gpt-5.5, gemini-3.1-pro-preview, claude-opus-4-7, claude-sonnet-4-6.
           timeout_seconds (int, optional): Override default timeout for this stage.
 
         Example stages:

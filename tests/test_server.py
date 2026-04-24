@@ -10,7 +10,7 @@ from codefleet.server import create_server
 from codefleet.supervisor import FleetSupervisor
 
 
-def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     script = (
         "import json; "
         "json.dump("
@@ -20,7 +20,7 @@ def _fake_build(executor, prompt_path, result_json_path, model, reasoning_effort
     return [sys.executable, "-c", script]
 
 
-def _fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+def _fake_build_sleep(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
     return [sys.executable, "-c", "import time; time.sleep(300)"]
 
 
@@ -56,7 +56,7 @@ class TestCreateServer:
     def test_server_default_creation(self, tmp_path, monkeypatch):
         """Server should create with env vars when no supervisor is passed."""
         monkeypatch.setenv("FLEET_BASE_DIR", str(tmp_path / "fleet"))
-        monkeypatch.setenv("FLEET_DEFAULT_MODEL", "gpt-5.4")
+        monkeypatch.setenv("FLEET_DEFAULT_MODEL", "gpt-5.5")
         monkeypatch.setenv("FLEET_DEFAULT_TIMEOUT", "300")
         monkeypatch.setenv("FLEET_MAX_CONCURRENT", "5")
         monkeypatch.setenv("FLEET_ALLOWED_REPOS", "")
@@ -78,7 +78,7 @@ class TestServerToolCalls:
         assert len(result) > 0
         text = result[0].text
         assert "supported_models" in text
-        assert "gpt-5.4" in text
+        assert "gpt-5.5" in text
         assert "gemini-3.1-pro-preview" in text
         assert "claude-sonnet-4-6" in text
 

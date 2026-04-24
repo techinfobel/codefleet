@@ -109,7 +109,7 @@ class TestWorkerRecord:
             branch_name="codex/test/w_test123",
             worktree_path="/tmp/fleet/workers/w_test123/worktree",
             worker_dir="/tmp/fleet/workers/w_test123",
-            model="gpt-5.4",
+            model="gpt-5.5",
             status=WorkerStatus.PENDING,
             created_at=time.time(),
             timeout_seconds=600,
@@ -155,7 +155,7 @@ class TestWorkerStatusPayload:
             branch_name="codex/my-task/w_abc",
             worktree_path="/fleet/workers/w_abc/worktree",
             worker_dir="/fleet/workers/w_abc",
-            model="gpt-5.4",
+            model="gpt-5.5",
             profile="coder",
             status=WorkerStatus.RUNNING,
             created_at=now,
@@ -190,7 +190,7 @@ class TestWorkerStatusPayload:
             branch_name="codex/serialize/w_ser",
             worktree_path="/wt",
             worker_dir="/wd",
-            model="gpt-5.4",
+            model="gpt-5.5",
             status=WorkerStatus.SUCCEEDED,
             created_at=now,
             timeout_seconds=60,
@@ -265,13 +265,13 @@ class TestExecutorType:
 
 class TestSupportedModel:
     def test_values(self):
-        assert SupportedModel.GPT_5_4.value == "gpt-5.4"
+        assert SupportedModel.GPT_5_5.value == "gpt-5.5"
         assert SupportedModel.GEMINI_3_1_PRO_PREVIEW.value == "gemini-3.1-pro-preview"
         assert SupportedModel.CLAUDE_OPUS_4_7.value == "claude-opus-4-7"
         assert SupportedModel.CLAUDE_SONNET_4_6.value == "claude-sonnet-4-6"
 
     def test_from_string(self):
-        assert SupportedModel("gpt-5.4") == SupportedModel.GPT_5_4
+        assert SupportedModel("gpt-5.5") == SupportedModel.GPT_5_5
         assert (
             SupportedModel("claude-sonnet-4-6")
             == SupportedModel.CLAUDE_SONNET_4_6
@@ -302,7 +302,7 @@ class TestSupportedModel:
         assert payload.executor == ExecutorType.GEMINI
 
     def test_supported_models_for_executor(self):
-        assert supported_models_for_executor(ExecutorType.CODEX) == ("gpt-5.4",)
+        assert supported_models_for_executor(ExecutorType.CODEX) == ("gpt-5.5",)
         assert supported_models_for_executor(ExecutorType.GEMINI) == (
             "gemini-3.1-pro-preview",
         )
@@ -339,12 +339,12 @@ class TestWorkflowModels:
         assert sd.model == SupportedModel.CLAUDE_OPUS_4_7
 
     def test_stage_definition_rejects_incompatible_model(self):
-        with pytest.raises(Exception, match="Unsupported model 'gpt-5.4' for executor 'gemini'"):
+        with pytest.raises(Exception, match="Unsupported model 'gpt-5.5' for executor 'gemini'"):
             StageDefinition(
                 name="bad",
                 executor=ExecutorType.GEMINI,
                 prompt_template="{task_prompt}",
-                model=SupportedModel.GPT_5_4,
+                model=SupportedModel.GPT_5_5,
             )
 
     def test_workflow_status_values(self):

@@ -28,7 +28,7 @@ def test_real_codex_worker_smoke(tmp_path, git_repo):
     supervisor = FleetSupervisor(
         base_dir=base_dir,
         allowed_repos=[str(git_repo)],
-        default_model=os.environ.get("FLEET_REAL_CODEX_SMOKE_MODEL", "gpt-5.4"),
+        default_model=os.environ.get("FLEET_REAL_CODEX_SMOKE_MODEL", "gpt-5.5"),
         default_timeout=int(os.environ.get("FLEET_REAL_CODEX_SMOKE_TIMEOUT", "180")),
         max_concurrent=1,
     )
@@ -44,7 +44,7 @@ def test_real_codex_worker_smoke(tmp_path, git_repo):
             "Set files_changed, tests, commits, and next_steps to empty arrays."
         ),
         executor="codex",
-        model=os.environ.get("FLEET_REAL_CODEX_SMOKE_MODEL", "gpt-5.4"),
+        model=os.environ.get("FLEET_REAL_CODEX_SMOKE_MODEL", "gpt-5.5"),
         timeout_seconds=int(os.environ.get("FLEET_REAL_CODEX_SMOKE_TIMEOUT", "180")),
     )
 

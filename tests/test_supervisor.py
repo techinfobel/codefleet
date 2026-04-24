@@ -62,11 +62,11 @@ class TestHealthcheck:
         assert isinstance(result["codex_found"], bool)
         assert isinstance(result["gemini_found"], bool)
         assert isinstance(result["claude_found"], bool)
-        assert result["default_model"] == "gpt-5.4"
+        assert result["default_model"] == "gpt-5.5"
         assert "db_path" in result
         assert "base_dir" in result
         assert "max_spawn_depth" in result
-        assert result["supported_models"]["codex"] == ["gpt-5.4"]
+        assert result["supported_models"]["codex"] == ["gpt-5.5"]
         assert result["supported_models"]["gemini"] == ["gemini-3.1-pro-preview"]
         assert result["supported_models"]["claude"] == [
             "claude-opus-4-7",
@@ -140,7 +140,7 @@ class TestCreateWorkerIntegration:
             "codefleet.supervisor.build_worker_command"
         ) as mock_build:
             # We'll dynamically set the command based on result_json_path
-            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
 
@@ -158,7 +158,8 @@ class TestCreateWorkerIntegration:
         script = (
             "import json; "
             "json.dump("
-            '{"summary":"done","status":"completed","files_changed":[],"tests":[]}, '
+            '{"summary":"done","status":"completed",'
+            '"files_changed":["fake.py"],"commits":[],"tests":[]}, '
             "open('__RESULT_PATH__', 'w'))"
         )
         payload = self._create_worker_with_script(supervisor, git_repo, script)
@@ -225,7 +226,7 @@ class TestCreateWorkerIntegration:
         supervisor = FleetSupervisor(
             base_dir=base_dir,
             allowed_repos=[str(git_repo)],
-            default_model="gpt-5.4",
+            default_model="gpt-5.5",
             default_timeout=30,
             max_concurrent=1,
             heartbeat_interval=1.0,
@@ -235,7 +236,8 @@ class TestCreateWorkerIntegration:
             "import json, time; "
             "time.sleep(2.5); "
             "json.dump("
-            '{"summary":"done","status":"completed","files_changed":[],"tests":[]}, '
+            '{"summary":"done","status":"completed",'
+            '"files_changed":["fake.py"],"commits":[],"tests":[]}, '
             "open('__RESULT_PATH__', 'w'))"
         )
         try:
@@ -447,7 +449,7 @@ class TestCleanupWorker:
         with patch(
             "codefleet.supervisor.build_worker_command"
         ) as mock_build:
-            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build
@@ -573,7 +575,7 @@ class TestCollectWorkerResult:
         with patch(
             "codefleet.supervisor.build_worker_command"
         ) as mock_build:
-            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None):
+            def fake_build(executor, prompt_path, result_json_path, model, reasoning_effort=None, extra_args=None, base_commit=None):
                 full_script = script.replace("__RESULT_PATH__", str(result_json_path))
                 return [sys.executable, "-c", full_script]
             mock_build.side_effect = fake_build
@@ -606,7 +608,7 @@ class TestConcurrencyLimit:
         sup = FleetSupervisor(
             base_dir=tmp_path / "fleet_limit",
             allowed_repos=[str(git_repo)],
-            default_model="gpt-5.4",
+            default_model="gpt-5.5",
             default_timeout=60,
             max_concurrent=2,
         )
@@ -723,7 +725,7 @@ class TestStatePersistence:
             branch_name="codex/persist/w_persist_test",
             worktree_path=str(base_dir / "workers/w_persist_test/worktree"),
             worker_dir=str(base_dir / "workers/w_persist_test"),
-            model="gpt-5.4",
+            model="gpt-5.5",
             status=WorkerStatus.SUCCEEDED,
             created_at=t.time(),
             timeout_seconds=60,
@@ -846,7 +848,7 @@ class TestStatePersistence:
         script = (
             "import json, time; "
             "print('still running', flush=True); "
-            f"time.sleep(2); json.dump({{'summary':'done','files_changed':[],"
+            f"time.sleep(2); json.dump({{'summary':'done','files_changed':['fake.py'],"
             f"'tests':[],'commits':[],'next_steps':[],'status':'completed'}}, "
             f"open({str(result_path)!r}, 'w'))"
         )
@@ -872,7 +874,7 @@ class TestStatePersistence:
                     branch_name=f"codex/recover/{worker_id}",
                     worktree_path=str(worktree),
                     worker_dir=str(worker_dir),
-                    model="gpt-5.4",
+                    model="gpt-5.5",
                     executor=ExecutorType.CODEX,
                     status=WorkerStatus.RUNNING,
                     created_at=time.time() - 5,
@@ -1117,7 +1119,7 @@ class TestSalvageResult:
             branch_name=branch_name,
             worktree_path=str(worktree_path),
             worker_dir=str(worker_dir),
-            model="gpt-5.4",
+            model="gpt-5.5",
             status=WorkerStatus.FAILED,
             created_at=time.time(),
             timeout_seconds=60,

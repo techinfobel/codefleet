@@ -194,11 +194,9 @@ class WorkflowEngine:
         for i, state in record.stage_states.items():
             if state.worker_id:
                 try:
-                    stage_def = record.stages[i]
-                    remove_branch = stage_def.worktree_strategy == WorktreeStrategy.NEW
                     self.supervisor.cleanup_worker(
                         state.worker_id,
-                        remove_branch=remove_branch,
+                        remove_branch=True,
                         remove_worktree_dir=True,
                     )
                     cleanup_summary["stages_cleaned"] += 1
@@ -372,22 +370,24 @@ class WorkflowEngine:
 
         rendered_prompt = self._render_prompt(record, stage_index)
 
-        existing_worktree_path = None
-        existing_branch_name = None
+        # INHERIT: branch off the parent's branch tip so this stage sees the
+        # parent's commits, but get its own fresh worktree (no shared
+        # .codefleet/ artifacts, no .git/index.lock contention). NEW:
+        # branch off the workflow's base_ref.
+        base_ref = record.base_ref
         if stage_def.worktree_strategy == WorktreeStrategy.INHERIT and stage_def.depends_on:
             first_dep = stage_def.depends_on[0]
             dep_state = record.stage_states.get(first_dep, StageState())
             if dep_state.worker_id:
                 dep_worker = self.supervisor.store.get_worker(dep_state.worker_id)
                 if dep_worker:
-                    existing_worktree_path = dep_worker.worktree_path
-                    existing_branch_name = dep_worker.branch_name
+                    base_ref = dep_worker.branch_name
 
         payload = self.supervisor.create_worker(
             repo_path=record.repo_path,
             task_name=f"{record.name}/{stage_def.name}",
             prompt=rendered_prompt,
-            base_ref=record.base_ref,
+            base_ref=base_ref,
             model=stage_def.model.value if stage_def.model else None,
             executor=stage_def.executor.value,
             reasoning_effort=stage_def.reasoning_effort,
@@ -395,8 +395,6 @@ class WorkflowEngine:
             extra_args=stage_def.extra_args,
             workflow_id=workflow_id,
             stage_index=stage_index,
-            existing_worktree_path=existing_worktree_path,
-            existing_branch_name=existing_branch_name,
         )
 
         state = record.stage_states.get(stage_index, StageState())

@@ -100,7 +100,7 @@ def main():
     outln(status_line(0, 4, 2, 2, "0s"))
     outln()
 
-    outln(f"  {YELLOW}[0]{RESET} {BOLD}backend-api{RESET}  {DIM}codex / gpt-5.4{RESET}")
+    outln(f"  {YELLOW}[0]{RESET} {BOLD}backend-api{RESET}  {DIM}codex / gpt-5.5{RESET}")
     spin("Creating worktree", 0.6, "codex/backend-api/w_8f3a21")
     spin("Codex writing code", 1.8, "5 files changed")
     spin("Running tests", 0.8, "18 passed")
@@ -133,7 +133,7 @@ def main():
     # --- Stage 2: tests (depends on 0) ---
     outln(status_line(2, 4, 1, 1, "1m 08s"))
     outln()
-    outln(f"  {BLUE}[2]{RESET} {BOLD}tests{RESET}  {DIM}codex / gpt-5.4 (depends on: 0){RESET}")
+    outln(f"  {BLUE}[2]{RESET} {BOLD}tests{RESET}  {DIM}codex / gpt-5.5 (depends on: 0){RESET}")
     spin("Inheriting worktree from backend-api", 0.4, "same branch")
     spin("Codex writing tests", 1.5, "2 files changed")
     spin("Running tests", 0.6, "24 passed")

@@ -57,7 +57,7 @@ Plus **Git** and **Python 3.11+**.
 
 `codefleet` constrains worker model selection to a small allowlist so orchestrators do not invent unsupported model names:
 
-- Codex: `gpt-5.4`
+- Codex: `gpt-5.5`
 - Gemini: `gemini-3.1-pro-preview`
 - Claude: `claude-opus-4-6`, `claude-sonnet-4-6`
 
@@ -230,7 +230,7 @@ Literal curly braces in prompts (JSON examples, code snippets) are safe — only
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLEET_DEFAULT_EXECUTOR` | `codex` | Default agent: `codex`, `gemini`, or `claude` |
-| `FLEET_DEFAULT_MODEL` | `gpt-5.4` | Default Codex model |
+| `FLEET_DEFAULT_MODEL` | `gpt-5.5` | Default Codex model |
 | `FLEET_GEMINI_DEFAULT_MODEL` | `gemini-3.1-pro-preview` | Default Gemini model |
 | `FLEET_CLAUDE_DEFAULT_MODEL` | `claude-sonnet-4-6` | Default Claude model |
 | `FLEET_DEFAULT_TIMEOUT` | `600` | Per-worker safety timeout in seconds (stale detection is the primary mechanism) |

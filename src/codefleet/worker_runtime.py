@@ -80,50 +80,69 @@ def get_claude_path() -> str | None:
     return shutil.which("claude")
 
 
-def _codex_result_instruction(prompt_path: Path) -> str:
+_SHARED_INSTRUCTIONS = (
+    "Read the task prompt from {prompt_path}.\n"
+    "Work in the current directory (a git worktree). Your worktree started at "
+    "base commit {base_ref}.\n"
+    "Do NOT commit or modify anything in the .codefleet/ directory.\n"
+    "Run relevant tests where appropriate.\n"
+    "\n"
+    "When you finish the task:\n"
+    "  1. Stage and commit all changed files with a descriptive commit message.\n"
+    "  2. Run `git log --oneline {base_ref}..HEAD` and include its output in "
+    "`summary`.\n"
+    "  3. Run `git diff --name-only {base_ref} HEAD` and put the paths in "
+    "`files_changed`.\n"
+    "  4. Put the full commit hashes in `commits`.\n"
+    "  5. Set `status` to \"completed\".\n"
+    "\n"
+    "If you cannot complete the task — sandbox denial, missing tool, permission "
+    "error, authentication failure, unclear requirements, or any other blocker — "
+    "DO NOT exit with an empty success. Instead:\n"
+    "  - Set `status` to \"blocked\".\n"
+    "  - In `summary`, describe exactly what blocked you (the command that "
+    "failed, the error message, what you tried).\n"
+    "  - Leave `commits` and `files_changed` as [] if you made none.\n"
+    "\n"
+    "A silent exit 0 with empty `commits` and empty `files_changed` is treated "
+    "as a failure by the supervisor. An honest `blocked` is always better than "
+    "a misleading `completed`."
+)
+
+
+def _codex_result_instruction(prompt_path: Path, base_ref: str) -> str:
     """Build the Codex-specific instruction string."""
     return (
-        f"Read the task prompt from {prompt_path}. "
-        f"Work in the current directory (a git worktree). "
-        f"Do NOT commit or modify anything in the .codefleet/ directory. "
-        f"Run relevant tests where appropriate. "
-        f"When you are done, stage and commit all changed files with a descriptive "
-        f"commit message. Include the commit hashes in the 'commits' field of your "
-        f"response. "
-        f"Return a single JSON object as your final response matching the provided output schema. "
-        f"Do not wrap the JSON in markdown."
+        _SHARED_INSTRUCTIONS.format(prompt_path=prompt_path, base_ref=base_ref)
+        + "\n\nReturn a single JSON object as your final response matching the "
+          "provided output schema. Do not wrap the JSON in markdown."
     )
 
 
-def _stream_result_instruction(prompt_path: Path) -> str:
+def _stream_result_instruction(prompt_path: Path, base_ref: str) -> str:
     """Build the Gemini/Claude instruction string for JSON final responses."""
     return (
-        f"Read the task prompt from {prompt_path}. "
-        f"Work in the current directory (a git worktree). "
-        f"Do NOT commit or modify anything in the .codefleet/ directory. "
-        f"Run relevant tests where appropriate. "
-        f"When you are done, stage and commit all changed files with a descriptive "
-        f"commit message. Include the commit hashes in the 'commits' field of your "
-        f"response. "
-        f"Return exactly one JSON object as your final response with this schema: "
-        f'{{"summary": "string", "files_changed": ["path"], '
-        f'"tests": [{{"command": "string", "status": "passed|failed|not_run", '
-        f'"details": "string"}}], '
-        f'"commits": ["hash"], "next_steps": ["string"], '
-        f'"status": "completed|blocked"}}. '
-        f"Do not wrap the JSON in markdown."
+        _SHARED_INSTRUCTIONS.format(prompt_path=prompt_path, base_ref=base_ref)
+        + "\n\nReturn exactly one JSON object as your final response with this "
+          'schema: {"summary": "string", "files_changed": ["path"], '
+          '"tests": [{"command": "string", "status": "passed|failed|not_run", '
+          '"details": "string"}], '
+          '"commits": ["hash"], "next_steps": ["string"], '
+          '"status": "completed|blocked"}. '
+          "Do not wrap the JSON in markdown."
     )
 
 
 def build_codex_command(
     prompt_path: Path,
     result_json_path: Path,
-    model: str = "gpt-5.4",
+    model: str = "gpt-5.5",
     reasoning_effort: str = "xhigh",
     extra_args: Optional[list[str]] = None,
+    base_commit: Optional[str] = None,
 ) -> list[str]:
     """Build the codex exec command."""
-    instruction = _codex_result_instruction(prompt_path)
+    instruction = _codex_result_instruction(prompt_path, base_commit or "HEAD")
     result_schema_path = result_json_path.with_name("result_schema.json")
 
     cmd = [
@@ -150,9 +169,10 @@ def build_gemini_command(
     result_json_path: Path,
     model: str = "gemini-3.1-pro-preview",
     extra_args: Optional[list[str]] = None,
+    base_commit: Optional[str] = None,
 ) -> list[str]:
     """Build the gemini CLI command."""
-    instruction = _stream_result_instruction(prompt_path)
+    instruction = _stream_result_instruction(prompt_path, base_commit or "HEAD")
 
     cmd = [
         "gemini", "-p", instruction,
@@ -173,9 +193,10 @@ def build_claude_command(
     model: str = "claude-sonnet-4-6",
     effort: str = "high",
     extra_args: Optional[list[str]] = None,
+    base_commit: Optional[str] = None,
 ) -> list[str]:
     """Build the claude CLI command."""
-    instruction = _stream_result_instruction(prompt_path)
+    instruction = _stream_result_instruction(prompt_path, base_commit or "HEAD")
 
     cmd = [
         "claude", "-p", instruction,
@@ -199,6 +220,7 @@ def build_worker_command(
     model: str,
     reasoning_effort: Optional[str] = None,
     extra_args: Optional[list[str]] = None,
+    base_commit: Optional[str] = None,
 ) -> list[str]:
     """Dispatch to the correct command builder based on executor type."""
     if executor == "gemini":
@@ -207,6 +229,7 @@ def build_worker_command(
             result_json_path=result_json_path,
             model=model,
             extra_args=extra_args,
+            base_commit=base_commit,
         )
     if executor == "claude":
         return build_claude_command(
@@ -215,6 +238,7 @@ def build_worker_command(
             model=model,
             effort=reasoning_effort or "high",
             extra_args=extra_args,
+            base_commit=base_commit,
         )
     # Default: codex
     return build_codex_command(
@@ -223,6 +247,7 @@ def build_worker_command(
         model=model,
         reasoning_effort=reasoning_effort or "xhigh",
         extra_args=extra_args,
+        base_commit=base_commit,
     )
 
 
