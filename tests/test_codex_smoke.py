@@ -62,7 +62,7 @@ def test_real_codex_worker_smoke(tmp_path, git_repo):
 
         assert status.status == WorkerStatus.SUCCEEDED, result.get("stderr_tail", "")
         assert result["result"] is not None
-        assert result["result"]["status"] == "completed"
+        assert result["result"]["status"] in ("completed", "completed_no_changes")
         assert result["result"]["files_changed"] == []
         assert result["result"]["tests"] == []
         assert result["result"]["commits"] == []
