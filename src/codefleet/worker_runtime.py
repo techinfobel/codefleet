@@ -1,6 +1,8 @@
+import errno
 import json
 import logging
 import os
+import pty
 import signal
 import shutil
 import subprocess
@@ -424,6 +426,14 @@ class WorkerProcess:
         self._retry_count = 0
         self._stale_restarts = 0
         self._cancelled = threading.Event()
+        # PTY plumbing: stdout is wired through a pseudo-terminal so child
+        # CLIs see isatty()=True and line-buffer their output. Without this,
+        # libc switches to block-buffered mode and reasoning tokens sit in a
+        # 4–8 KB buffer for minutes, which our stale-detector reads as a
+        # silent worker. _stdout_master_fd is the parent end; the reader
+        # thread tees it into stdout_path.
+        self._stdout_master_fd: Optional[int] = None
+        self._stdout_reader_thread: Optional[threading.Thread] = None
 
     @property
     def pid(self) -> Optional[int]:
@@ -435,32 +445,114 @@ class WorkerProcess:
     def retry_count(self) -> int:
         return self._retry_count
 
-    def start(self) -> int:
-        """Start the worker process. Returns the PID."""
-        stdout_f = open(self.stdout_path, "w")
-        stderr_f = open(self.stderr_path, "w")
+    def _spawn_with_pty(self, stderr_f) -> subprocess.Popen:
+        """Spawn the worker subprocess with a PTY for stdout.
 
+        Returns the started Popen and registers self._stdout_master_fd plus
+        a daemon reader thread that tees PTY output into stdout_path.
+        Stderr stays as a plain pipe-to-file because libc keeps stderr
+        unbuffered or line-buffered by default.
+        """
+        master_fd, slave_fd = pty.openpty()
         try:
-            self._process = subprocess.Popen(
+            proc = subprocess.Popen(
                 self.command,
                 cwd=str(self.cwd),
                 stdin=subprocess.DEVNULL,
-                stdout=stdout_f,
+                stdout=slave_fd,
                 stderr=stderr_f,
                 start_new_session=True,
+                close_fds=True,
             )
+        except Exception:
+            os.close(master_fd)
+            os.close(slave_fd)
+            raise
+        # Parent must close its copy of the slave end so reads on the master
+        # see EOF when the child exits.
+        os.close(slave_fd)
+        self._stdout_master_fd = master_fd
+        thread = threading.Thread(
+            target=self._stdout_reader_loop,
+            args=(master_fd,),
+            daemon=True,
+            name=f"codefleet-stdout-{self.worker_id}",
+        )
+        self._stdout_reader_thread = thread
+        thread.start()
+        return proc
+
+    def _stdout_reader_loop(self, master_fd: int) -> None:
+        """Read from the PTY master and append to stdout_path until EOF.
+
+        The loop exits when the child closes the slave end (EOF on Darwin,
+        EIO on Linux) or when the fd is otherwise unreadable. The thread
+        owns the master fd and closes it on exit.
+        """
+        try:
+            with open(self.stdout_path, "ab", buffering=0) as out:
+                while True:
+                    try:
+                        data = os.read(master_fd, 4096)
+                    except OSError as e:
+                        if e.errno in (errno.EIO, errno.EBADF):
+                            return
+                        logger.debug(
+                            "Worker %s stdout reader OSError %s",
+                            self.worker_id, e, exc_info=True,
+                        )
+                        return
+                    if not data:
+                        return
+                    try:
+                        out.write(data)
+                    except OSError:
+                        logger.debug(
+                            "Worker %s stdout write failed",
+                            self.worker_id, exc_info=True,
+                        )
+                        return
+        finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+    def _stop_stdout_reader(self, timeout: float = 2.0) -> None:
+        """Wait for the reader thread to exit and clear the master fd.
+
+        Safe to call multiple times. Assumes the child process has already
+        been terminated (or is about to be), so the reader will see EOF/EIO
+        on its next read and unwind naturally.
+        """
+        thread = self._stdout_reader_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+        self._stdout_reader_thread = None
+        # The reader closes master_fd in its finally block, so we just
+        # forget our handle here — closing again would error.
+        self._stdout_master_fd = None
+
+    def start(self) -> int:
+        """Start the worker process. Returns the PID."""
+        # Truncate any prior stdout/stderr from earlier runs of the same
+        # worker_id (defensive — fresh worker dirs are empty).
+        open(self.stdout_path, "wb").close()
+        stderr_f = open(self.stderr_path, "w")
+
+        try:
+            self._process = self._spawn_with_pty(stderr_f)
             if self.started_at_wall is None:
                 self.started_at_wall = time.time()
             if self.last_activity_wall is None:
                 self.last_activity_wall = self.started_at_wall
         except Exception:
-            stdout_f.close()
             stderr_f.close()
             raise
 
         self._monitor_thread = threading.Thread(
             target=self._monitor,
-            args=(stdout_f, stderr_f),
+            args=(stderr_f,),
             daemon=True,
         )
         self._monitor_thread.start()
@@ -479,17 +571,23 @@ class WorkerProcess:
         return True
 
     def attach(self, pid: int) -> int:
-        """Attach monitoring to an already-running worker process by PID."""
+        """Attach monitoring to an already-running worker process by PID.
+
+        The recovered process keeps whatever stdout fd it had under the
+        previous supervisor — we cannot retroactively wire a PTY in.
+        Stale-detection on its file growth is degraded for whatever buffering
+        the original supervisor used, but the monitor's other signals
+        (auth detection, wall-clock timeout) still work.
+        """
         self._attached_pid = pid
         if self.started_at_wall is None:
             self.started_at_wall = time.time()
         if self.last_activity_wall is None:
             self.last_activity_wall = self.started_at_wall
-        stdout_f = open(self.stdout_path, "a")
         stderr_f = open(self.stderr_path, "a")
         self._monitor_thread = threading.Thread(
             target=self._monitor,
-            args=(stdout_f, stderr_f),
+            args=(stderr_f,),
             daemon=True,
         )
         self._monitor_thread.start()
@@ -527,30 +625,27 @@ class WorkerProcess:
         except Exception:
             return False
 
-    def _restart_process(self, stdout_f, stderr_f, reason: str):
-        """Kill current process and restart in the same worktree.
+    def _restart_process(self, stderr_f, reason: str):
+        """Kill the current process and restart it in the same worktree.
 
-        Returns new (stdout_f, stderr_f) file handles.
+        Returns the new stderr file handle. The stdout PTY/reader pair is
+        torn down and replaced inside _spawn_with_pty.
         """
         self._terminate()
-        stdout_f.close()
+        # _terminate killed the child, which closes the slave end of the
+        # PTY, which lets the reader thread see EOF and exit on its own.
+        self._stop_stdout_reader()
         stderr_f.close()
         with open(self.stderr_path, "a") as f:
             f.write(f"\n--- [codefleet] {reason} ---\n")
-        stdout_f = open(self.stdout_path, "w")
+        # Truncate stdout so the new run starts with a clean log.
+        open(self.stdout_path, "wb").close()
         stderr_f = open(self.stderr_path, "a")
         self._attached_pid = None
-        self._process = subprocess.Popen(
-            self.command,
-            cwd=str(self.cwd),
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_f,
-            stderr=stderr_f,
-            start_new_session=True,
-        )
+        self._process = self._spawn_with_pty(stderr_f)
         self.started_at_wall = time.time()
         self.last_activity_wall = self.started_at_wall
-        return stdout_f, stderr_f
+        return stderr_f
 
     def _emit_heartbeat(
         self,
@@ -579,7 +674,7 @@ class WorkerProcess:
                 exc_info=True,
             )
 
-    def _monitor(self, stdout_f, stderr_f):
+    def _monitor(self, stderr_f):
         """Monitor the process for completion, stale detection, or rate-limit retry."""
         exit_code = -1
         error = None
@@ -609,9 +704,9 @@ class WorkerProcess:
                         and self._retry_count < self.max_retries
                         and not self._cancelled.is_set()
                     ):
-                        stdout_f.close()
-                        stderr_f.close()
                         if self._is_rate_limited():
+                            self._stop_stdout_reader()
+                            stderr_f.close()
                             self._retry_count += 1
                             delay = min(
                                 self.retry_base_delay
@@ -636,16 +731,9 @@ class WorkerProcess:
                                 error = "Cancelled during retry backoff"
                                 return
 
-                            stdout_f = open(self.stdout_path, "w")
+                            open(self.stdout_path, "wb").close()
                             stderr_f = open(self.stderr_path, "a")
-                            self._process = subprocess.Popen(
-                                self.command,
-                                cwd=str(self.cwd),
-                                stdin=subprocess.DEVNULL,
-                                stdout=stdout_f,
-                                stderr=stderr_f,
-                                start_new_session=True,
-                            )
+                            self._process = self._spawn_with_pty(stderr_f)
                             last_output_size = self._output_size()
                             last_activity = time.monotonic()
                             last_activity_wall = time.time()
@@ -698,8 +786,7 @@ class WorkerProcess:
                                 self._stale_restarts,
                                 self.stale_max_restarts,
                             )
-                            stdout_f, stderr_f = self._restart_process(
-                                stdout_f,
+                            stderr_f = self._restart_process(
                                 stderr_f,
                                 f"Stale (no output for {int(now - last_activity)}s). "
                                 f"Restart {self._stale_restarts}/{self.stale_max_restarts}",
@@ -738,8 +825,11 @@ class WorkerProcess:
         except Exception as e:
             error = f"Monitor error: {e}"
         finally:
-            stdout_f.close()
-            stderr_f.close()
+            self._stop_stdout_reader()
+            try:
+                stderr_f.close()
+            except Exception:
+                pass
             if self.on_complete:
                 self.on_complete(self.worker_id, exit_code, error)
 
